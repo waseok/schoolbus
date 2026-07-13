@@ -29,5 +29,10 @@ export async function GET(request: Request) {
   const holidays = Object.entries(holidayPreset)
     .filter(([date, names]) => date.startsWith(month!) && (settings?.include_labor_day || !names.some((name) => name.includes("노동절"))) && (settings?.include_election_day || !names.some((name) => name.includes("선거"))))
     .map(([date, names]) => ({ date, names }));
-  return Response.json({ month, holidays, exclusions: exclusionsResult.data, nonOperatingRuns: runsResult.data, buses: busesResult.data, criterion: "morning_only_including_holidays" });
+  const weekends: Array<{ date: string; names: string[] }> = [];
+  for (let day = 1; day <= new Date(Number(month!.slice(0, 4)), Number(month!.slice(5, 7)), 0).getDate(); day += 1) {
+    const date = `${month}-${String(day).padStart(2, "0")}`;
+    if ([0, 6].includes(new Date(`${date}T12:00:00`).getDay())) weekends.push({ date, names: ["주말"] });
+  }
+  return Response.json({ month, holidays: [...holidays, ...weekends], exclusions: exclusionsResult.data, nonOperatingRuns: runsResult.data, buses: busesResult.data, criterion: "morning_only_including_holidays_and_weekends" });
 }

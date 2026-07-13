@@ -23,6 +23,20 @@ function localDate() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 }
 
+function isWeekend(date: string) {
+  const day = new Date(`${date}T12:00:00`).getDay();
+  return day === 0 || day === 6;
+}
+
+function downloadCsv(filename: string, rows: string[][]) {
+  const csv = `\uFEFF${rows.map((row) => row.map((value) => `"${value.replaceAll('"', '""')}"`).join(",")).join("\r\n")}`;
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
 const buses = [
   { id: 1, label: "1호차", plate: "78가 **34", driver: "김*수", students: 22 },
   { id: 2, label: "2호차", plate: "71나 **82", driver: "박*준", students: 18 },
@@ -89,7 +103,7 @@ export default function Home() {
   const boardedCount = useMemo(() => students.filter((student) => student.boarded).length, [students]);
   const holiday = holidays.find((item) => item.date === selectedDate);
   const calendarExclusion = schoolData?.exclusions.find((item) => item.date === selectedDate);
-  const excludedReason = holiday?.names.join(", ") ?? calendarExclusion?.note ?? null;
+  const excludedReason = isWeekend(selectedDate) ? "주말" : holiday?.names.join(", ") ?? calendarExclusion?.note ?? null;
   const nextHoliday = holidays.find((item) => item.date > selectedDate);
   const statisticRows = useMemo(() => {
     if (!statistics) return [];
@@ -387,16 +401,16 @@ export default function Home() {
         </div>
         <nav aria-label="주요 메뉴">
           <NavButton active={view === "log"} onClick={() => setView("log")}>오늘의 운행일지</NavButton>
-          {authUser.role === "admin" && <NavButton active={view === "stats"} onClick={() => setView("stats")}>월별 미운행 통계</NavButton>}
+          {authUser.role === "admin" && <NavButton active={view === "stats"} onClick={() => setView("stats")}>미운행 통계</NavButton>}
           <NavButton active={view === "checklist"} onClick={() => setView("checklist")}>안전 점검 체크리스트</NavButton>
-          {authUser.role === "admin" && <NavButton active={view === "settings"} onClick={() => setView("settings")}>차량·학생 설정</NavButton>}
+          {authUser.role === "admin" && <NavButton active={view === "settings"} onClick={() => setView("settings")}>통학버스 관리</NavButton>}
         </nav>
         <div className="sidebar-note"><span>운행 기간</span><strong>{settingsForm.startDate.replaceAll("-", ". ")} — {settingsForm.endDate.replaceAll("-", ". ")}</strong><small>공휴일 자동 제외 · 재량휴업일 {schoolData?.exclusions.length ?? 0}일</small></div>
       </aside>
 
       <section className="workspace">
         <header className="topbar">
-          <div><span className="eyebrow">{settingsForm.schoolYear}학년도 · {selectedDate >= settingsForm.semester2StartDate && selectedDate <= settingsForm.semester2EndDate ? "2학기" : "1학기"}</span><h1>{view === "log" ? "오늘의 운행일지" : view === "stats" ? "월별 미운행 통계" : view === "checklist" ? "안전 점검 체크리스트" : "차량·학생 설정"}</h1></div>
+          <div><span className="eyebrow">{settingsForm.schoolYear}학년도 · {selectedDate >= settingsForm.semester2StartDate && selectedDate <= settingsForm.semester2EndDate ? "2학기" : "1학기"}</span><h1>{view === "log" ? "오늘의 운행일지" : view === "stats" ? "미운행 통계" : view === "checklist" ? "안전 점검 체크리스트" : "통학버스 관리"}</h1></div>
           <div className="account-area"><div className="today"><span>{authUser.demo ? "읽기 전용 체험" : authUser.role === "admin" ? "업무담당자" : authUser.role === "driver" ? "운전자" : "동승자"}</span><strong>{authUser.display_name ?? authUser.username}</strong></div><button onClick={logout}>{authUser.demo ? "체험 종료" : "로그아웃"}</button></div>
         </header>
         {authUser.demo && <div className="demo-banner"><strong>체험 모드</strong><span>샘플 데이터로 화면을 둘러보는 중입니다. 입력 내용은 실제로 저장되지 않습니다.</span></div>}
@@ -436,7 +450,7 @@ export default function Home() {
 
         {view === "stats" && (
           <section className="main-panel wide">
-            <div className="panel-heading"><div><span className="eyebrow">안전 점검 사이트 입력용</span><h2>월별 미운행 날짜</h2><p>공휴일·재량휴업일과 실제 미운행 기록을 차량별로 모았습니다.</p></div><label className="month-control">조회 월<input type="month" value={statisticsMonth} onChange={(event) => setStatisticsMonth(event.target.value)} /></label></div>
+            <div className="panel-heading"><div><span className="eyebrow">안전 점검 사이트 입력용</span><h2>월별 미운행 날짜</h2><p>공휴일·재량휴업일과 실제 미운행 기록을 차량별로 모았습니다.</p></div><div className="export-actions"><a className="secondary-button" href={`/api/exports/runs?month=${statisticsMonth}`}>운행일지 CSV</a><button className="secondary-button" onClick={() => downloadCsv(`${statisticsMonth}_미운행통계.csv`, [["호차", "날짜", "사유"], ...statisticRows.flatMap((row) => row.dates.map((item) => [row.bus, item.date, item.reason]))])}>미운행 CSV</button><label className="month-control">조회 월<input type="month" value={statisticsMonth} onChange={(event) => setStatisticsMonth(event.target.value)} /></label></div></div>
             <div className="stats-summary"><div><span>운행 대상 차량</span><strong>{statistics?.buses.length ?? 0}대</strong></div><div><span>공통 미운행일</span><strong>{(statistics?.holidays.length ?? 0) + (statistics?.exclusions.length ?? 0)}일</strong></div><div><span>개별 미운행</span><strong>{statistics?.nonOperatingRuns.length ?? 0}건</strong></div></div>
             <div className="stats-list">{statisticRows.map((row) => <div className="stats-row" key={row.bus}><strong>{row.bus}</strong><div>{row.dates.length ? row.dates.map((item) => <span className="nonoperating-date" key={item.date}><b>{koreanDate(item.date)}</b><small>{item.reason}</small></span>) : <span>미운행 없음</span>}</div><small>{row.dates.length}일</small></div>)}</div>
             <div className="student-absence-panel"><h3>학생별 미탑승 통계</h3><p>학생을 선택하면 해당 학생의 미탑승일, 사유와 총 횟수를 확인합니다.</p><select value={selectedAbsenceStudent} onChange={(event) => setSelectedAbsenceStudent(event.target.value)}><option value="">학생 선택</option>{Array.from(new Set((studentAbsences?.records ?? []).map((record) => record.name))).sort().map((name) => <option key={name} value={name}>{name}</option>)}</select>{selectedAbsenceStudent && <><strong className="absence-total">{selectedAbsenceStudent} · 총 {(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).length}일 미탑승</strong><div className="absence-table">{(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).map((record, index) => <div key={`${record.date}-${index}`}><strong>{koreanDate(record.date)} · {record.busNumber}호차</strong><small>{record.note}</small></div>)}</div></>}{!selectedAbsenceStudent && <div className="empty-state"><strong>학생을 선택하세요.</strong></div>}</div>

@@ -1,9 +1,13 @@
 @import "tailwindcss";
 
+@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundL.ttf") format("truetype"); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundB.ttf") format("truetype"); font-weight:700; font-style:normal; font-display:swap; }
+@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundEB.ttf") format("truetype"); font-weight:800 900; font-style:normal; font-display:swap; }
+
 :root { --ink:#17211d; --muted:#68736d; --line:#dfe5e1; --cream:#f4f3ed; --green:#174f3f; --mint:#dcece5; --orange:#e7773b; }
 * { box-sizing: border-box; }
 html, body { margin:0; min-height:100%; background:var(--cream); color:var(--ink); }
-body { font-family: Pretendard, "Noto Sans KR", "Malgun Gothic", sans-serif; }
+body { font-family: "NanumSquareRound", "Noto Sans KR", "Malgun Gothic", sans-serif; }
 button, input, select { font:inherit; }
 button { cursor:pointer; }
 .app-shell { min-height:100vh; display:grid; grid-template-columns:260px 1fr; }
@@ -243,5 +247,6 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
  .absence-table { display:grid; }
  .absence-table div { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:12px; padding:10px 0; border-top:1px solid #edf0ee; font-size:11px; }
  .absence-table span,.absence-table small { color:var(--muted); }
- .pdf-button { padding:10px 12px; border:1px solid #b7c8c0; border-radius:8px; background:white; color:#315b4d; font-size:11px; font-weight:800; }
+.pdf-button { padding:10px 12px; border:1px solid #b7c8c0; border-radius:8px; background:white; color:#315b4d; font-size:11px; font-weight:800; }
+.export-actions { display:flex; align-items:end; gap:8px; }
  @media print { .sidebar,.topbar,.inspection-controls input,.inspection-controls select,.pdf-button,.save-bar,.demo-banner { display:none !important; } .workspace { padding:0; } .main-panel { border:0; box-shadow:none; } .checklist-panel { max-width:none; } }
