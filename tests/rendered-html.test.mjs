@@ -6,11 +6,12 @@ import { maskName, maskPlate } from "../app/masking.ts";
 
 const root = new URL("../", import.meta.url);
 
-test("통학버스 관리 화면의 핵심 기능이 포함되어 있다", async () => {
-  const [page, layout, hosting] = await Promise.all([
+test("통학버스 관리 화면과 Supabase 서버 연결이 포함되어 있다", async () => {
+  const [page, layout, runtime, migration] = await Promise.all([
     readFile(new URL("app/page.tsx", root), "utf8"),
     readFile(new URL("app/layout.tsx", root), "utf8"),
-    readFile(new URL(".openai/hosting.json", root), "utf8"),
+    readFile(new URL("db/runtime.ts", root), "utf8"),
+    readFile(new URL("supabase/migrations/20260713074934_schoolbus_schema.sql", root), "utf8"),
   ]);
   assert.match(layout, /통학버스 안전일지/);
   assert.match(page, /오늘의 운행일지/);
@@ -18,14 +19,23 @@ test("통학버스 관리 화면의 핵심 기능이 포함되어 있다", async
   assert.match(page, /월별 미운행 통계/);
   assert.match(page, /안전 점검 체크리스트/);
   assert.doesNotMatch(page, /하교/);
-  assert.equal(JSON.parse(hosting).d1, "DB");
+  assert.match(runtime, /@supabase\/supabase-js/);
+  assert.match(runtime, /SUPABASE_SECRET_KEY/);
+  assert.doesNotMatch(runtime, /NEXT_PUBLIC_SUPABASE_SECRET_KEY/);
+  assert.match(migration, /enable row level security/);
+  assert.match(migration, /generate_series\(1, 18\)/);
 });
 
 test("기간이 겹치는 학생 중복 차량 배정을 차단한다", async () => {
-  const route = await readFile(new URL("app/api/data/route.ts", root), "utf8");
-  assert.match(route, /start_date <= \?/);
-  assert.match(route, /end_date >= \?/);
+  const [route, migration] = await Promise.all([
+    readFile(new URL("app/api/data/route.ts", root), "utf8"),
+    readFile(new URL("supabase/migrations/20260713074934_schoolbus_schema.sql", root), "utf8"),
+  ]);
+  assert.match(route, /\.lte\("start_date", body\.endDate\)/);
+  assert.match(route, /\.gte\("end_date", body\.startDate\)/);
   assert.match(route, /이미 다른 차량에 배정/);
+  assert.match(migration, /exclude using gist/);
+  assert.match(migration, /daterange\(start_date, end_date, '\[\]'\) with &&/);
 });
 
 test("한국 공휴일 자료에 다일 명절과 대체공휴일이 포함된다", async () => {

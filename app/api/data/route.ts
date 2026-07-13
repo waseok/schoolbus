@@ -1,4 +1,4 @@
-import { ensureDatabase, jsonError } from "../../../db/runtime";
+import { assertDatabase, ensureDatabase, jsonError } from "../../../db/runtime";
 import { createPinHash, requireUser, validPin, validUsername } from "../../auth";
 
 type DataAction =
@@ -20,23 +20,39 @@ export async function GET(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   const db = await ensureDatabase();
-  const [settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems] = await Promise.all([
-    db.prepare("SELECT * FROM school_settings WHERE id = 1").first(),
-    db.prepare("SELECT * FROM buses WHERE active = 1 ORDER BY bus_number").all(),
-    db.prepare("SELECT * FROM students WHERE active = 1 ORDER BY grade, class_name, name").all(),
-    db.prepare("SELECT * FROM assignments ORDER BY start_date DESC").all(),
-    db.prepare("SELECT * FROM calendar_exclusions ORDER BY date").all(),
-    db.prepare("SELECT * FROM inspection_groups WHERE active = 1 ORDER BY id").all(),
-    db.prepare("SELECT * FROM inspection_group_buses ORDER BY group_id, bus_id").all(),
-    db.prepare("SELECT id, username, display_name, role, active FROM app_users WHERE active = 1 ORDER BY role, display_name, username").all(),
-    db.prepare("SELECT * FROM user_bus_assignments ORDER BY start_date DESC").all(),
-    db.prepare("SELECT id, code, category, content, responsible_role, sort_order FROM checklist_items WHERE active = 1 ORDER BY sort_order").all(),
+  const results = await Promise.all([
+    db.from("school_settings").select("*").eq("id", 1).maybeSingle(),
+    db.from("buses").select("*").eq("active", 1).order("bus_number"),
+    db.from("students").select("*").eq("active", 1).order("grade").order("class_name").order("name"),
+    db.from("assignments").select("*").order("start_date", { ascending: false }),
+    db.from("calendar_exclusions").select("*").order("date"),
+    db.from("inspection_groups").select("*").eq("active", 1).order("id"),
+    db.from("inspection_group_buses").select("*").order("group_id").order("bus_id"),
+    db.from("app_users").select("id, username, display_name, role, active").eq("active", 1).order("role").order("display_name").order("username"),
+    db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }),
+    db.from("checklist_items").select("id, code, category, content, responsible_role, sort_order").eq("active", 1).order("sort_order"),
   ]);
-  if (user.role === "admin") return Response.json({ settings, buses: buses.results, students: students.results, assignments: assignments.results, exclusions: exclusions.results, groups: groups.results, groupBuses: groupBuses.results, users: users.results, userBuses: userBuses.results, checklistItems: checklistItems.results });
-  const allowed = Array.from(new Set((userBuses.results as Array<{ user_id: number; bus_id: number }>).filter((item) => item.user_id === user.id).map((item) => item.bus_id)));
-  const visibleAssignments = (assignments.results as Array<{ id: number; student_id: number; bus_id: number }>).filter((item) => allowed.includes(item.bus_id));
+  for (const result of results) if (result.error) assertDatabase(null, result.error);
+  const [settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems] = results.map((result) => result.data);
+
+  if (user.role === "admin") {
+    return Response.json({ settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems });
+  }
+  const allowed = Array.from(new Set((userBuses as Array<{ user_id: number; bus_id: number }>).filter((item) => item.user_id === user.id).map((item) => item.bus_id)));
+  const visibleAssignments = (assignments as Array<{ id: number; student_id: number; bus_id: number }>).filter((item) => allowed.includes(item.bus_id));
   const visibleStudentIds = visibleAssignments.map((item) => item.student_id);
-  return Response.json({ settings, buses: (buses.results as Array<{ id: number }>).filter((item) => allowed.includes(item.id)), students: (students.results as Array<{ id: number }>).filter((item) => visibleStudentIds.includes(item.id)), assignments: visibleAssignments, exclusions: exclusions.results, groups: (groups.results as Array<{ id: number }>).filter((group) => (groupBuses.results as Array<{ group_id: number; bus_id: number }>).some((item) => item.group_id === group.id && allowed.includes(item.bus_id))), groupBuses: (groupBuses.results as Array<{ bus_id: number }>).filter((item) => allowed.includes(item.bus_id)), users: [], userBuses: [], checklistItems: checklistItems.results });
+  return Response.json({
+    settings,
+    buses: (buses as Array<{ id: number }>).filter((item) => allowed.includes(item.id)),
+    students: (students as Array<{ id: number }>).filter((item) => visibleStudentIds.includes(item.id)),
+    assignments: visibleAssignments,
+    exclusions,
+    groups: (groups as Array<{ id: number }>).filter((group) => (groupBuses as Array<{ group_id: number; bus_id: number }>).some((item) => item.group_id === group.id && allowed.includes(item.bus_id))),
+    groupBuses: (groupBuses as Array<{ bus_id: number }>).filter((item) => allowed.includes(item.bus_id)),
+    users: [],
+    userBuses: [],
+    checklistItems,
+  });
 }
 
 export async function POST(request: Request) {
@@ -47,80 +63,113 @@ export async function POST(request: Request) {
 
   if (body.action === "saveBus") {
     if (!Number.isInteger(body.id)) return jsonError("차량 정보가 올바르지 않습니다.");
-    await db.prepare("UPDATE buses SET plate_number = ?, driver_name = ?, attendant_name = ? WHERE id = ?")
-      .bind(body.plateNumber?.trim() || null, body.driverName?.trim() || null, body.attendantName?.trim() || null, body.id).run();
+    const { error } = await db.from("buses").update({
+      plate_number: body.plateNumber?.trim() || null,
+      driver_name: body.driverName?.trim() || null,
+      attendant_name: body.attendantName?.trim() || null,
+    }).eq("id", body.id);
+    if (error) assertDatabase(null, error);
   } else if (body.action === "addStudent") {
     if (!body.name?.trim() || !Number.isInteger(body.grade) || !body.className?.trim()) return jsonError("학생 이름, 학년, 반을 모두 입력하세요.");
-    await db.prepare("INSERT INTO students (name, grade, class_name) VALUES (?, ?, ?)").bind(body.name.trim(), body.grade, body.className.trim()).run();
+    const { error } = await db.from("students").insert({ name: body.name.trim(), grade: body.grade, class_name: body.className.trim() });
+    if (error) assertDatabase(null, error);
   } else if (body.action === "addStudentAndAssign") {
     if (!body.name?.trim() || !Number.isInteger(body.grade) || !body.className?.trim() || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("학생 정보와 차량 배정 기간을 확인하세요.");
-    const inserted = await db.prepare("INSERT INTO students (name, grade, class_name) VALUES (?, ?, ?)").bind(body.name.trim(), body.grade, body.className.trim()).run();
-    await db.prepare("INSERT INTO assignments (student_id, bus_id, stop_name, start_date, end_date) VALUES (?, ?, ?, ?, ?)")
-      .bind(Number(inserted.meta.last_row_id), body.busId, body.stopName?.trim() || null, body.startDate, body.endDate).run();
+    const { data: inserted, error: studentError } = await db.from("students")
+      .insert({ name: body.name.trim(), grade: body.grade, class_name: body.className.trim() }).select("id").single();
+    const student = assertDatabase(inserted, studentError);
+    const { error } = await db.from("assignments").insert({ student_id: student.id, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
+    if (error) assertDatabase(null, error);
   } else if (body.action === "saveAssignment") {
     if (!body.studentId || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("학생 배정 기간을 확인하세요.");
-    const overlap = await db.prepare("SELECT id FROM assignments WHERE student_id = ? AND start_date <= ? AND end_date >= ? LIMIT 1")
-      .bind(body.studentId, body.endDate, body.startDate).first();
+    const { data: overlap, error: overlapError } = await db.from("assignments").select("id")
+      .eq("student_id", body.studentId).lte("start_date", body.endDate).gte("end_date", body.startDate).limit(1).maybeSingle();
+    if (overlapError) assertDatabase(null, overlapError);
     if (overlap) return jsonError("이 학생은 해당 기간에 이미 다른 차량에 배정되어 있습니다.");
-    await db.prepare("INSERT INTO assignments (student_id, bus_id, stop_name, start_date, end_date) VALUES (?, ?, ?, ?, ?)")
-      .bind(body.studentId, body.busId, body.stopName?.trim() || null, body.startDate, body.endDate).run();
+    const { error } = await db.from("assignments").insert({ student_id: body.studentId, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
+    if (error) assertDatabase(null, error);
   } else if (body.action === "reassignStudent") {
     if (!body.studentId || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("학생과 새 배정 기간을 확인하세요.");
-    const overlapping = await db.prepare("SELECT id, start_date FROM assignments WHERE student_id = ? AND start_date <= ? AND end_date >= ? ORDER BY start_date DESC LIMIT 1")
-      .bind(body.studentId, body.startDate, body.startDate).first<{ id: number; start_date: string }>();
+    const { data: overlapping, error: overlapError } = await db.from("assignments").select("id, start_date")
+      .eq("student_id", body.studentId).lte("start_date", body.startDate).gte("end_date", body.startDate)
+      .order("start_date", { ascending: false }).limit(1).maybeSingle();
+    if (overlapError) assertDatabase(null, overlapError);
     if (overlapping) {
       if (overlapping.start_date >= body.startDate) return jsonError("같은 날짜에 시작하는 다른 차량 배정이 있습니다.");
       const previousDay = new Date(`${body.startDate}T12:00:00Z`);
       previousDay.setUTCDate(previousDay.getUTCDate() - 1);
-      await db.prepare("UPDATE assignments SET end_date = ? WHERE id = ?").bind(previousDay.toISOString().slice(0, 10), overlapping.id).run();
+      const { error } = await db.from("assignments").update({ end_date: previousDay.toISOString().slice(0, 10) }).eq("id", overlapping.id);
+      if (error) assertDatabase(null, error);
     }
-    const futureOverlap = await db.prepare("SELECT id FROM assignments WHERE student_id = ? AND start_date <= ? AND end_date >= ? LIMIT 1")
-      .bind(body.studentId, body.endDate, body.startDate).first();
+    const { data: futureOverlap, error: futureError } = await db.from("assignments").select("id")
+      .eq("student_id", body.studentId).lte("start_date", body.endDate).gte("end_date", body.startDate).limit(1).maybeSingle();
+    if (futureError) assertDatabase(null, futureError);
     if (futureOverlap) return jsonError("새 배정 기간과 겹치는 다른 차량 배정이 있습니다.");
-    await db.prepare("INSERT INTO assignments (student_id, bus_id, stop_name, start_date, end_date) VALUES (?, ?, ?, ?, ?)")
-      .bind(body.studentId, body.busId, body.stopName?.trim() || null, body.startDate, body.endDate).run();
+    const { error } = await db.from("assignments").insert({ student_id: body.studentId, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
+    if (error) assertDatabase(null, error);
   } else if (body.action === "addExclusion") {
     if (!body.date) return jsonError("제외 날짜를 입력하세요.");
-    await db.prepare("INSERT INTO calendar_exclusions (date, kind, note) VALUES (?, ?, ?) ON CONFLICT(date) DO UPDATE SET kind = excluded.kind, note = excluded.note")
-      .bind(body.date, body.kind, body.note?.trim() || null).run();
+    const { error } = await db.from("calendar_exclusions").upsert({ date: body.date, kind: body.kind, note: body.note?.trim() || null }, { onConflict: "date" });
+    if (error) assertDatabase(null, error);
   } else if (body.action === "deleteExclusion") {
-    await db.prepare("DELETE FROM calendar_exclusions WHERE id = ?").bind(body.id).run();
+    const { error } = await db.from("calendar_exclusions").delete().eq("id", body.id);
+    if (error) assertDatabase(null, error);
   } else if (body.action === "saveGroupBuses") {
     if (!body.groupId || !Array.isArray(body.busIds) || body.busIds.length === 0) return jsonError("점검 세트에 한 대 이상의 차량을 선택하세요.");
-    await db.prepare("DELETE FROM inspection_group_buses WHERE group_id = ?").bind(body.groupId).run();
-    const placeholders = body.busIds.map(() => "?").join(",");
-    await db.prepare(`DELETE FROM inspection_group_buses WHERE group_id <> ? AND bus_id IN (${placeholders})`).bind(body.groupId, ...body.busIds).run();
-    await db.batch(body.busIds.map((busId) => db.prepare("INSERT INTO inspection_group_buses (group_id, bus_id) VALUES (?, ?)").bind(body.groupId, busId)));
+    const firstDelete = await db.from("inspection_group_buses").delete().eq("group_id", body.groupId);
+    if (firstDelete.error) assertDatabase(null, firstDelete.error);
+    const otherDelete = await db.from("inspection_group_buses").delete().neq("group_id", body.groupId).in("bus_id", body.busIds);
+    if (otherDelete.error) assertDatabase(null, otherDelete.error);
+    const { error } = await db.from("inspection_group_buses").insert(body.busIds.map((busId) => ({ group_id: body.groupId, bus_id: busId })));
+    if (error) assertDatabase(null, error);
   } else if (body.action === "addGroup") {
     if (!body.name?.trim()) return jsonError("점검 세트 이름을 입력하세요.");
-    await db.prepare("INSERT INTO inspection_groups (name) VALUES (?)").bind(body.name.trim()).run();
+    const { error } = await db.from("inspection_groups").insert({ name: body.name.trim() });
+    if (error) assertDatabase(null, error);
   } else if (body.action === "deleteGroup") {
-    const groupCount = await db.prepare("SELECT COUNT(*) AS count FROM inspection_groups WHERE active = 1").first<{ count: number }>();
-    if (Number(groupCount?.count ?? 0) <= 1) return jsonError("점검 세트는 한 개 이상 필요합니다.");
-    await db.prepare("DELETE FROM inspection_group_buses WHERE group_id = ?").bind(body.groupId).run();
-    await db.prepare("UPDATE inspection_groups SET active = 0 WHERE id = ?").bind(body.groupId).run();
+    const { count, error: countError } = await db.from("inspection_groups").select("id", { count: "exact", head: true }).eq("active", 1);
+    if (countError) assertDatabase(null, countError);
+    if ((count ?? 0) <= 1) return jsonError("점검 세트는 한 개 이상 필요합니다.");
+    const mappingDelete = await db.from("inspection_group_buses").delete().eq("group_id", body.groupId);
+    if (mappingDelete.error) assertDatabase(null, mappingDelete.error);
+    const { error } = await db.from("inspection_groups").update({ active: 0 }).eq("id", body.groupId);
+    if (error) assertDatabase(null, error);
   } else if (body.action === "updateChecklistItem") {
     if (!body.id || !body.content?.trim() || !["all", "driver", "attendant"].includes(body.responsibleRole)) return jsonError("점검 문구와 담당 역할을 확인하세요.");
-    await db.prepare("UPDATE checklist_items SET content = ?, responsible_role = ? WHERE id = ?")
-      .bind(body.content.trim(), body.responsibleRole, body.id).run();
+    const { error } = await db.from("checklist_items").update({ content: body.content.trim(), responsible_role: body.responsibleRole }).eq("id", body.id);
+    if (error) assertDatabase(null, error);
   } else if (body.action === "addUser") {
     const username = body.username?.trim();
     if (!validUsername(username) || !validPin(body.pin) || !["admin", "driver", "attendant"].includes(body.role)) return jsonError("아이디, 간편 비밀번호와 역할을 확인하세요.");
     const pin = await createPinHash(body.pin);
-    await db.prepare("INSERT INTO app_users (username, display_name, role, pin_salt, pin_hash) VALUES (?, ?, ?, ?, ?) ON CONFLICT(username) DO UPDATE SET display_name = excluded.display_name, role = excluded.role, pin_salt = excluded.pin_salt, pin_hash = excluded.pin_hash, active = 1")
-      .bind(username, body.displayName?.trim() || null, body.role, pin.salt, pin.hash).run();
-    const createdUser = await db.prepare("SELECT id FROM app_users WHERE username = ?").bind(username).first<{ id: number }>();
-    if (createdUser) await db.prepare("DELETE FROM user_bus_assignments WHERE user_id = ?").bind(createdUser.id).run();
+    const { data: created, error: userError } = await db.from("app_users").upsert({
+      username,
+      display_name: body.displayName?.trim() || null,
+      role: body.role,
+      pin_salt: pin.salt,
+      pin_hash: pin.hash,
+      active: 1,
+    }, { onConflict: "username" }).select("id").single();
+    const createdUser = assertDatabase(created, userError);
+    const deletion = await db.from("user_bus_assignments").delete().eq("user_id", createdUser.id);
+    if (deletion.error) assertDatabase(null, deletion.error);
     if (body.role !== "admin" && body.busId && body.startDate && body.endDate) {
-      if (createdUser) await db.prepare("INSERT INTO user_bus_assignments (user_id, bus_id, start_date, end_date) VALUES (?, ?, ?, ?)").bind(createdUser.id, body.busId, body.startDate, body.endDate).run();
+      const { error } = await db.from("user_bus_assignments").insert({ user_id: createdUser.id, bus_id: body.busId, start_date: body.startDate, end_date: body.endDate });
+      if (error) assertDatabase(null, error);
     }
   } else if (body.action === "saveSettings") {
     if (!body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("운행 기간을 확인하세요.");
-    await db.prepare("UPDATE school_settings SET school_year = ?, start_date = ?, end_date = ?, include_labor_day = ?, include_election_day = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1")
-      .bind(body.schoolYear, body.startDate, body.endDate, body.includeLaborDay ? 1 : 0, body.includeElectionDay ? 1 : 0).run();
+    const { error } = await db.from("school_settings").update({
+      school_year: body.schoolYear,
+      start_date: body.startDate,
+      end_date: body.endDate,
+      include_labor_day: body.includeLaborDay ? 1 : 0,
+      include_election_day: body.includeElectionDay ? 1 : 0,
+      updated_at: new Date().toISOString(),
+    }).eq("id", 1);
+    if (error) assertDatabase(null, error);
   } else {
     return jsonError("지원하지 않는 작업입니다.");
   }
-
   return Response.json({ ok: true });
 }

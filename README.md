@@ -30,13 +30,22 @@ npm test
 npm run build
 ```
 
+Vercel에서는 Framework Preset을 `Next.js`로 두고 GitHub 저장소를 연결하면 됩니다.
+
 ## 데이터 저장
 
-운영 데이터는 Cloudflare D1 데이터베이스에 저장됩니다. 첫 접속 시 관리자 계정을 만든 뒤 차량, 사용자, 학생 배정과 학사일정을 설정합니다. 실제 학생 정보와 비밀번호는 GitHub 저장소에 포함되지 않습니다.
+운영 데이터는 Supabase PostgreSQL에 저장됩니다. 첫 접속 시 관리자 계정을 만든 뒤 차량, 사용자, 학생 배정과 학사일정을 설정합니다. 실제 학생 정보와 비밀번호, Supabase 비밀키는 GitHub 저장소에 포함되지 않습니다.
+
+서버 환경변수로 아래 두 값을 설정해야 합니다.
+
+- `SUPABASE_URL`: 프로젝트 API URL
+- `SUPABASE_SECRET_KEY`: 서버 전용 Secret API Key
+
+데이터베이스 스키마는 `supabase/migrations/`에서 관리합니다.
 
 ## 기술 구성
 
-- Next.js 호환 vinext + React
-- Cloudflare Workers API
-- Cloudflare D1 + Drizzle ORM
+- Next.js + React
+- Vercel 서버 API Routes
+- Supabase PostgreSQL + Row Level Security
 - 한국 공휴일 자동 계산

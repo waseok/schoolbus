@@ -1,4 +1,4 @@
-import { ensureDatabase } from "../db/runtime";
+import { assertDatabase, ensureDatabase } from "../db/runtime";
 
 export type AppRole = "admin" | "driver" | "attendant";
 export type AuthUser = { id: number; username: string; display_name: string | null; role: AppRole };
@@ -47,8 +47,13 @@ export async function createSession(userId: number) {
   const id = await tokenHash(rawToken);
   const createdAt = new Date();
   const expiresAt = new Date(createdAt.getTime() + 1000 * 60 * 60 * 24 * 14);
-  await db.prepare("INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
-    .bind(id, userId, expiresAt.toISOString(), createdAt.toISOString()).run();
+  const { error } = await db.from("sessions").insert({
+    id,
+    user_id: userId,
+    expires_at: expiresAt.toISOString(),
+    created_at: createdAt.toISOString(),
+  });
+  if (error) assertDatabase(null, error, "로그인 세션을 만들지 못했습니다.");
   return { token: rawToken, maxAge: 60 * 60 * 24 * 14 };
 }
 
@@ -72,17 +77,28 @@ export async function currentUser(request: Request): Promise<AuthUser | null> {
   if (!token) return null;
   const db = await ensureDatabase();
   const id = await tokenHash(token);
-  const user = await db.prepare(
-    "SELECT u.id, u.username, u.display_name, u.role FROM sessions s JOIN app_users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ? AND u.active = 1",
-  ).bind(id, new Date().toISOString()).first<AuthUser>();
-  return user ?? null;
+  const { data: session, error: sessionError } = await db.from("sessions")
+    .select("user_id")
+    .eq("id", id)
+    .gt("expires_at", new Date().toISOString())
+    .maybeSingle();
+  if (sessionError) assertDatabase(null, sessionError);
+  if (!session) return null;
+  const { data: user, error: userError } = await db.from("app_users")
+    .select("id, username, display_name, role")
+    .eq("id", session.user_id)
+    .eq("active", 1)
+    .maybeSingle();
+  if (userError) assertDatabase(null, userError);
+  return (user as AuthUser | null) ?? null;
 }
 
 export async function revokeCurrentSession(request: Request) {
   const token = readCookie(request, "school_bus_session");
   if (!token) return;
   const db = await ensureDatabase();
-  await db.prepare("DELETE FROM sessions WHERE id = ?").bind(await tokenHash(token)).run();
+  const { error } = await db.from("sessions").delete().eq("id", await tokenHash(token));
+  if (error) assertDatabase(null, error);
 }
 
 export async function requireUser(request: Request, roles?: AppRole[]) {
@@ -94,7 +110,14 @@ export async function requireUser(request: Request, roles?: AppRole[]) {
 export async function canAccessBus(user: AuthUser, busId: number, date: string) {
   if (user.role === "admin") return true;
   const db = await ensureDatabase();
-  const assignment = await db.prepare("SELECT id FROM user_bus_assignments WHERE user_id = ? AND bus_id = ? AND start_date <= ? AND end_date >= ? LIMIT 1")
-    .bind(user.id, busId, date, date).first();
+  const { data: assignment, error } = await db.from("user_bus_assignments")
+    .select("id")
+    .eq("user_id", user.id)
+    .eq("bus_id", busId)
+    .lte("start_date", date)
+    .gte("end_date", date)
+    .limit(1)
+    .maybeSingle();
+  if (error) assertDatabase(null, error);
   return Boolean(assignment);
 }

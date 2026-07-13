@@ -1,4 +1,4 @@
-import { ensureDatabase, jsonError } from "../../../db/runtime";
+import { assertDatabase, ensureDatabase, jsonError } from "../../../db/runtime";
 import { canAccessBus, requireUser } from "../../auth";
 
 type BoardingInput = { studentId: number; boarded: boolean; note?: string };
@@ -13,9 +13,12 @@ export async function GET(request: Request) {
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessBus(user, busId, date))) return jsonError("담당 차량만 조회할 수 있습니다.", 403);
 
-  const run = await db.prepare("SELECT * FROM daily_runs WHERE bus_id = ? AND date = ?").bind(busId, date).first<{ id: number }>();
-  const boarding = run ? await db.prepare("SELECT student_id, boarded, note FROM boarding_records WHERE daily_run_id = ?").bind(run.id).all() : { results: [] };
-  return Response.json({ run: run ?? null, boarding: boarding.results });
+  const { data: run, error: runError } = await db.from("daily_runs").select("*").eq("bus_id", busId).eq("date", date).maybeSingle();
+  if (runError) assertDatabase(null, runError);
+  if (!run) return Response.json({ run: null, boarding: [] });
+  const { data: boarding, error } = await db.from("boarding_records").select("student_id, boarded, note").eq("daily_run_id", run.id);
+  if (error) assertDatabase(null, error);
+  return Response.json({ run, boarding });
 }
 
 export async function POST(request: Request) {
@@ -26,14 +29,23 @@ export async function POST(request: Request) {
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessBus(user, body.busId, body.date))) return jsonError("담당 차량만 기록할 수 있습니다.", 403);
 
-  await db.prepare("INSERT INTO daily_runs (bus_id, date, status, reason, note) VALUES (?, ?, ?, ?, ?) ON CONFLICT(bus_id, date) DO UPDATE SET status = excluded.status, reason = excluded.reason, note = excluded.note")
-    .bind(body.busId, body.date, body.status, body.reason?.trim() || null, body.note?.trim() || null).run();
-  const run = await db.prepare("SELECT id FROM daily_runs WHERE bus_id = ? AND date = ?").bind(body.busId, body.date).first<{ id: number }>();
-  if (!run) return jsonError("운행일지를 저장하지 못했습니다.", 500);
+  const { data: run, error: runError } = await db.from("daily_runs").upsert({
+    bus_id: body.busId,
+    date: body.date,
+    status: body.status,
+    reason: body.reason?.trim() || null,
+    note: body.note?.trim() || null,
+  }, { onConflict: "bus_id,date" }).select("id").single();
+  const savedRun = assertDatabase(run, runError, "운행일지를 저장하지 못했습니다.");
 
   if (body.boarding?.length) {
-    await db.batch(body.boarding.map((item) => db.prepare("INSERT INTO boarding_records (daily_run_id, student_id, boarded, note) VALUES (?, ?, ?, ?) ON CONFLICT(daily_run_id, student_id) DO UPDATE SET boarded = excluded.boarded, note = excluded.note")
-      .bind(run.id, item.studentId, item.boarded ? 1 : 0, item.note?.trim() || null)));
+    const { error } = await db.from("boarding_records").upsert(body.boarding.map((item) => ({
+      daily_run_id: savedRun.id,
+      student_id: item.studentId,
+      boarded: item.boarded ? 1 : 0,
+      note: item.note?.trim() || null,
+    })), { onConflict: "daily_run_id,student_id" });
+    if (error) assertDatabase(null, error);
   }
-  return Response.json({ ok: true, runId: run.id });
+  return Response.json({ ok: true, runId: savedRun.id });
 }

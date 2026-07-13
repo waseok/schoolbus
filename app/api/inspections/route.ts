@@ -1,4 +1,4 @@
-import { ensureDatabase, jsonError } from "../../../db/runtime";
+import { assertDatabase, ensureDatabase, jsonError } from "../../../db/runtime";
 import { requireUser } from "../../auth";
 
 async function canAccessGroup(user: { id: number; role: string }, groupId: number, month: string) {
@@ -6,9 +6,14 @@ async function canAccessGroup(user: { id: number; role: string }, groupId: numbe
   const db = await ensureDatabase();
   const monthStart = `${month}-01`;
   const monthEnd = `${month}-${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate().toString().padStart(2, "0")}`;
-  const row = await db.prepare("SELECT igb.id FROM inspection_group_buses igb JOIN user_bus_assignments uba ON uba.bus_id = igb.bus_id WHERE igb.group_id = ? AND uba.user_id = ? AND uba.start_date <= ? AND uba.end_date >= ? LIMIT 1")
-    .bind(groupId, user.id, monthEnd, monthStart).first();
-  return Boolean(row);
+  const { data: mappings, error: mappingError } = await db.from("inspection_group_buses").select("bus_id").eq("group_id", groupId);
+  if (mappingError) assertDatabase(null, mappingError);
+  const busIds = (mappings ?? []).map((item) => item.bus_id);
+  if (!busIds.length) return false;
+  const { data: assignment, error } = await db.from("user_bus_assignments").select("id")
+    .eq("user_id", user.id).in("bus_id", busIds).lte("start_date", monthEnd).gte("end_date", monthStart).limit(1).maybeSingle();
+  if (error) assertDatabase(null, error);
+  return Boolean(assignment);
 }
 
 type InspectionAnswer = { itemCode: string; answer: "yes" | "no" | "not_applicable"; note?: string };
@@ -22,10 +27,17 @@ export async function GET(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessGroup(user, groupId, month!))) return jsonError("담당 차량이 포함된 점검표만 조회할 수 있습니다.", 403);
-  const inspection = await db.prepare("SELECT * FROM monthly_inspections WHERE month = ? AND group_id = ?").bind(month, groupId).first<{ id: number }>();
-  const responses = inspection ? await db.prepare("SELECT item_code, answer, note FROM inspection_responses WHERE inspection_id = ? ORDER BY item_code").bind(inspection.id).all() : { results: [] };
-  const buses = inspection ? await db.prepare("SELECT b.id, b.bus_number FROM monthly_inspection_buses mib JOIN buses b ON b.id = mib.bus_id WHERE mib.inspection_id = ? ORDER BY b.bus_number").bind(inspection.id).all() : { results: [] };
-  return Response.json({ inspection: inspection ?? null, responses: responses.results, buses: buses.results });
+  const { data: inspection, error: inspectionError } = await db.from("monthly_inspections").select("*").eq("month", month).eq("group_id", groupId).maybeSingle();
+  if (inspectionError) assertDatabase(null, inspectionError);
+  if (!inspection) return Response.json({ inspection: null, responses: [], buses: [] });
+  const [responsesResult, busesResult] = await Promise.all([
+    db.from("inspection_responses").select("item_code, answer, note").eq("inspection_id", inspection.id).order("item_code"),
+    db.from("monthly_inspection_buses").select("bus:buses(id, bus_number)").eq("inspection_id", inspection.id),
+  ]);
+  if (responsesResult.error) assertDatabase(null, responsesResult.error);
+  if (busesResult.error) assertDatabase(null, busesResult.error);
+  const buses = (busesResult.data ?? []).flatMap((item) => item.bus ?? []).sort((a, b) => a.bus_number - b.bus_number);
+  return Response.json({ inspection, responses: responsesResult.data, buses });
 }
 
 export async function POST(request: Request) {
@@ -35,30 +47,53 @@ export async function POST(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessGroup(user, body.groupId, body.month))) return jsonError("담당 차량이 포함된 점검표만 작성할 수 있습니다.", 403);
-  const activeItems = await db.prepare("SELECT code, responsible_role FROM checklist_items WHERE active = 1 ORDER BY sort_order").all<{ code: string; responsible_role: "all" | "driver" | "attendant" }>();
+  const { data: activeItems, error: itemError } = await db.from("checklist_items").select("code, responsible_role").eq("active", 1).order("sort_order");
+  if (itemError) assertDatabase(null, itemError);
+  const items = (activeItems ?? []) as Array<{ code: string; responsible_role: "all" | "driver" | "attendant" }>;
   const answersToSave = user.role === "admin" ? body.answers : body.answers.filter((answer) => {
-    const item = activeItems.results.find((candidate) => candidate.code === answer.itemCode);
+    const item = items.find((candidate) => candidate.code === answer.itemCode);
     return item && (item.responsible_role === "all" || item.responsible_role === user.role);
   });
-  await db.prepare("INSERT INTO monthly_inspections (month, group_id, status) VALUES (?, ?, 'draft') ON CONFLICT(month, group_id) DO NOTHING")
-    .bind(body.month, body.groupId).run();
-  const inspection = await db.prepare("SELECT id FROM monthly_inspections WHERE month = ? AND group_id = ?").bind(body.month, body.groupId).first<{ id: number }>();
-  if (!inspection) return jsonError("점검표를 저장하지 못했습니다.", 500);
-  if (body.status === "complete") {
-    const existing = await db.prepare("SELECT item_code FROM inspection_responses WHERE inspection_id = ?").bind(inspection.id).all<{ item_code: string }>();
-    const completedCodes = new Set([...existing.results.map((item) => item.item_code), ...answersToSave.map((item) => item.itemCode)]);
-    if (activeItems.results.some((item) => !completedCodes.has(item.code))) return jsonError("모든 점검 항목을 확인한 뒤 완료할 수 있습니다.");
+  const { data: inspection, error: inspectionError } = await db.from("monthly_inspections").upsert({
+    month: body.month,
+    group_id: body.groupId,
+    status: "draft",
+  }, { onConflict: "month,group_id", ignoreDuplicates: true }).select("id").maybeSingle();
+  if (inspectionError) assertDatabase(null, inspectionError);
+  let inspectionId = inspection?.id;
+  if (!inspectionId) {
+    const result = await db.from("monthly_inspections").select("id").eq("month", body.month).eq("group_id", body.groupId).single();
+    inspectionId = assertDatabase(result.data, result.error, "점검표를 저장하지 못했습니다.").id;
   }
-  await db.prepare("UPDATE monthly_inspections SET status = ?, submitted_at = CASE WHEN ? = 'submitted' THEN CURRENT_TIMESTAMP ELSE submitted_at END WHERE id = ?")
-    .bind(body.status ?? "draft", body.status ?? "draft", inspection.id).run();
-  const snapshot = await db.prepare("SELECT COUNT(*) AS count FROM monthly_inspection_buses WHERE inspection_id = ?").bind(inspection.id).first<{ count: number }>();
-  if (Number(snapshot?.count ?? 0) === 0) {
-    await db.prepare("INSERT INTO monthly_inspection_buses (inspection_id, bus_id) SELECT ?, bus_id FROM inspection_group_buses WHERE group_id = ?")
-      .bind(inspection.id, body.groupId).run();
+  if (body.status === "complete") {
+    const { data: existing, error } = await db.from("inspection_responses").select("item_code").eq("inspection_id", inspectionId);
+    if (error) assertDatabase(null, error);
+    const completedCodes = new Set([...(existing ?? []).map((item) => item.item_code), ...answersToSave.map((item) => item.itemCode)]);
+    if (items.some((item) => !completedCodes.has(item.code))) return jsonError("모든 점검 항목을 확인한 뒤 완료할 수 있습니다.");
+  }
+  const update: { status: string; submitted_at?: string } = { status: body.status ?? "draft" };
+  if (body.status === "submitted") update.submitted_at = new Date().toISOString();
+  const updateResult = await db.from("monthly_inspections").update(update).eq("id", inspectionId);
+  if (updateResult.error) assertDatabase(null, updateResult.error);
+
+  const { count, error: countError } = await db.from("monthly_inspection_buses").select("id", { count: "exact", head: true }).eq("inspection_id", inspectionId);
+  if (countError) assertDatabase(null, countError);
+  if ((count ?? 0) === 0) {
+    const { data: groupBuses, error } = await db.from("inspection_group_buses").select("bus_id").eq("group_id", body.groupId);
+    if (error) assertDatabase(null, error);
+    if (groupBuses?.length) {
+      const snapshotResult = await db.from("monthly_inspection_buses").insert(groupBuses.map((item) => ({ inspection_id: inspectionId, bus_id: item.bus_id })));
+      if (snapshotResult.error) assertDatabase(null, snapshotResult.error);
+    }
   }
   if (answersToSave.length) {
-    await db.batch(answersToSave.map((item) => db.prepare("INSERT INTO inspection_responses (inspection_id, item_code, answer, note) VALUES (?, ?, ?, ?) ON CONFLICT(inspection_id, item_code) DO UPDATE SET answer = excluded.answer, note = excluded.note")
-      .bind(inspection.id, item.itemCode, item.answer, item.note?.trim() || null)));
+    const { error } = await db.from("inspection_responses").upsert(answersToSave.map((item) => ({
+      inspection_id: inspectionId,
+      item_code: item.itemCode,
+      answer: item.answer,
+      note: item.note?.trim() || null,
+    })), { onConflict: "inspection_id,item_code" });
+    if (error) assertDatabase(null, error);
   }
-  return Response.json({ ok: true, inspectionId: inspection.id });
+  return Response.json({ ok: true, inspectionId });
 }
