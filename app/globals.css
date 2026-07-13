@@ -7,7 +7,8 @@
 :root { --ink:#17211d; --muted:#68736d; --line:#dfe5e1; --cream:#f4f3ed; --green:#174f3f; --mint:#dcece5; --orange:#e7773b; }
 * { box-sizing: border-box; }
 html, body { margin:0; min-height:100%; background:var(--cream); color:var(--ink); }
-body { font-family: "NanumSquareRound", "Noto Sans KR", "Malgun Gothic", sans-serif; }
+body { font-family: "NanumSquareRound", "Noto Sans KR", "Malgun Gothic", sans-serif; font-weight:400; }
+h1,h2,h3,.brand strong,.auth-brand strong { font-weight:900; }
 button, input, select { font:inherit; }
 button { cursor:pointer; }
 .app-shell { min-height:100vh; display:grid; grid-template-columns:260px 1fr; }
@@ -239,8 +240,12 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
 .checklist-edit-row button { height:34px; border:0; border-radius:7px; background:#315f4f; color:white; font-size:9px; font-weight:800; }
 @media (max-width: 1000px) { .app-shell{grid-template-columns:210px 1fr}.workspace{padding:28px 24px}.content-grid,.settings-grid{grid-template-columns:1fr}.summary-panel{grid-template-columns:repeat(3,1fr)}.reassign-form{grid-template-columns:repeat(2,1fr)}.checklist-edit-row{grid-template-columns:35px 120px 1fr}.checklist-edit-row select,.checklist-edit-row button{grid-column:auto} }
 @media (max-width: 760px) { .app-shell{display:block}.sidebar{position:static;height:auto;padding:18px}.brand{padding-bottom:16px}.sidebar nav{display:flex;overflow-x:auto;padding-top:14px}.nav-button{min-width:max-content;text-align:center}.sidebar-note{display:none}.workspace{padding:22px 14px}.topbar{align-items:center}.today{min-width:auto}.content-grid{display:block}.summary-panel{grid-template-columns:1fr;margin-top:16px}.control-row{grid-template-columns:1fr 1fr}.driver-chip{display:none}.student-row{grid-template-columns:34px 1fr auto}.student-row input{grid-column:2/4;margin-bottom:10px}.stats-summary{grid-template-columns:1fr}.stats-summary div{border-right:0;border-bottom:1px solid var(--line)}.stats-row{grid-template-columns:65px 1fr}.stats-row small{grid-column:2;text-align:left}.check-row{grid-template-columns:1fr}.check-row>div{justify-content:flex-start}.settings-grid{display:block}.settings-card{margin-top:16px}.form-grid{grid-template-columns:1fr}.span-two{grid-column:auto}.inspection-controls{align-items:stretch;flex-direction:column}.account-area button{display:none}.entry-choices{grid-template-columns:1fr}.issued-code-row{grid-template-columns:1fr}.issued-code-row small{white-space:normal} }
- .stats-row div .nonoperating-date { display:grid; gap:3px; min-width:82px; }
- .stats-row div .nonoperating-date small { color:#68736d; font-size:9px; font-weight:600; text-align:left; white-space:normal; }
+.stats-row div .nonoperating-date { display:grid; gap:3px; min-width:82px; }
+.stats-row div .nonoperating-date small { color:#68736d; font-size:9px; font-weight:600; text-align:left; white-space:normal; }
+.stats-row div .nonoperating-date.weekend { background:#e7f1ff; color:#1b5f9f; }
+.stats-row div .nonoperating-date.holiday { background:#fff0f0; color:#bf3030; }
+.stats-row div .nonoperating-date.manual { background:#f4eafe; color:#74379e; }
+.student-directory .student-save-button { align-self:end; min-height:42px; border:0; border-radius:9px; background:#174f3f; color:#fff; font-weight:800; box-shadow:0 3px 8px #174f3f2b; }
  .student-absence-panel { margin:0 24px 24px; padding:18px; border:1px solid var(--line); border-radius:12px; }
  .student-absence-panel h3 { margin:0; font-size:15px; }
  .student-absence-panel > p { margin:5px 0 12px; color:var(--muted); font-size:11px; }
