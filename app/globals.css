@@ -174,6 +174,20 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
 .calendar-tag span { color:#93652e; }
 .full { width:100%; }
 .settings-page { max-width:1320px; margin:auto; display:grid; gap:22px; }
+.settings-subnav { display:flex; flex-wrap:wrap; gap:8px; padding:8px; border:1px solid var(--line); border-radius:12px; background:white; }
+.settings-subnav button { padding:9px 12px; border:0; border-radius:8px; background:transparent; color:#526158; font-size:12px; font-weight:800; }
+.settings-subnav button.active { background:#174f3f; color:white; }
+.semester-settings,.import-panel,.assigned-students { overflow:hidden; }
+.import-panel input[type="file"] { height:auto; padding:9px; }
+.assigned-students { display:grid; }
+.assigned-student-row { display:grid; grid-template-columns:130px 1fr auto; gap:12px; align-items:center; padding:12px 24px; border-top:1px solid #edf0ee; font-size:12px; }
+.assigned-student-row span,.assigned-student-row small { color:var(--muted); font-size:11px; }
+.settings-page.buses > .settings-grid.settings-lower,.settings-page.buses > .checklist-editor { display:none; }
+.settings-page.students > .settings-grid:not(.student-settings),.settings-page.students > .settings-grid.settings-lower:not(.student-settings),.settings-page.students > .checklist-editor { display:none; }
+.settings-page.calendar > .settings-grid,.settings-page.calendar > .checklist-editor { display:none; }
+.settings-page.codes > .settings-grid:not(.settings-lower),.settings-page.codes > .student-settings,.settings-page.codes > .checklist-editor { display:none; }
+.settings-page.groups > .settings-grid:not(.settings-lower),.settings-page.groups > .student-settings,.settings-page.groups > .checklist-editor { display:none; }
+.settings-page.checklist > .settings-grid { display:none; }
 .settings-lower { align-items:stretch; }
 .settings-form-panel { display:flex; flex-direction:column; }
 .form-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; padding:0 24px 22px; }
@@ -212,3 +226,13 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
 .checklist-edit-row button { height:34px; border:0; border-radius:7px; background:#315f4f; color:white; font-size:9px; font-weight:800; }
 @media (max-width: 1000px) { .app-shell{grid-template-columns:210px 1fr}.workspace{padding:28px 24px}.content-grid,.settings-grid{grid-template-columns:1fr}.summary-panel{grid-template-columns:repeat(3,1fr)}.reassign-form{grid-template-columns:repeat(2,1fr)}.checklist-edit-row{grid-template-columns:35px 120px 1fr}.checklist-edit-row select,.checklist-edit-row button{grid-column:auto} }
 @media (max-width: 760px) { .app-shell{display:block}.sidebar{position:static;height:auto;padding:18px}.brand{padding-bottom:16px}.sidebar nav{display:flex;overflow-x:auto;padding-top:14px}.nav-button{min-width:max-content;text-align:center}.sidebar-note{display:none}.workspace{padding:22px 14px}.topbar{align-items:center}.today{min-width:auto}.content-grid{display:block}.summary-panel{grid-template-columns:1fr;margin-top:16px}.control-row{grid-template-columns:1fr 1fr}.driver-chip{display:none}.student-row{grid-template-columns:34px 1fr auto}.student-row input{grid-column:2/4;margin-bottom:10px}.stats-summary{grid-template-columns:1fr}.stats-summary div{border-right:0;border-bottom:1px solid var(--line)}.stats-row{grid-template-columns:65px 1fr}.stats-row small{grid-column:2;text-align:left}.check-row{grid-template-columns:1fr}.check-row>div{justify-content:flex-start}.settings-grid{display:block}.settings-card{margin-top:16px}.form-grid{grid-template-columns:1fr}.span-two{grid-column:auto}.inspection-controls{align-items:stretch;flex-direction:column}.account-area button{display:none}.entry-choices{grid-template-columns:1fr}.issued-code-row{grid-template-columns:1fr}.issued-code-row small{white-space:normal} }
+ .stats-row div .nonoperating-date { display:grid; gap:3px; min-width:82px; }
+ .stats-row div .nonoperating-date small { color:#68736d; font-size:9px; font-weight:600; text-align:left; white-space:normal; }
+ .student-absence-panel { margin:0 24px 24px; padding:18px; border:1px solid var(--line); border-radius:12px; }
+ .student-absence-panel h3 { margin:0; font-size:15px; }
+ .student-absence-panel > p { margin:5px 0 12px; color:var(--muted); font-size:11px; }
+ .absence-table { display:grid; }
+ .absence-table div { display:grid; grid-template-columns:1.2fr 1fr 1fr; gap:12px; padding:10px 0; border-top:1px solid #edf0ee; font-size:11px; }
+ .absence-table span,.absence-table small { color:var(--muted); }
+ .pdf-button { padding:10px 12px; border:1px solid #b7c8c0; border-radius:8px; background:white; color:#315b4d; font-size:11px; font-weight:800; }
+ @media print { .sidebar,.topbar,.inspection-controls input,.inspection-controls select,.pdf-button,.save-bar,.demo-banner { display:none !important; } .workspace { padding:0; } .main-panel { border:0; box-shadow:none; } .checklist-panel { max-width:none; } }

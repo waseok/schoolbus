@@ -14,7 +14,7 @@ type DataAction =
   | { action: "deleteGroup"; groupId: number }
   | { action: "updateChecklistItem"; id: number; content: string; responsibleRole: "all" | "driver" | "attendant" }
   | { action: "issueOperationCode"; displayName?: string; role: "driver" | "attendant"; busId: number; startDate: string; endDate: string }
-  | { action: "saveSettings"; schoolYear: number; startDate: string; endDate: string; includeLaborDay: boolean; includeElectionDay: boolean };
+  | { action: "saveSettings"; schoolYear: number; startDate: string; endDate: string; semester1StartDate: string; semester1EndDate: string; semester2StartDate: string; semester2EndDate: string; includeLaborDay: boolean; includeElectionDay: boolean };
 
 export async function GET(request: Request) {
   const user = await requireUser(request);
@@ -206,11 +206,15 @@ export async function POST(request: Request) {
     }
     return Response.json({ ok: true, code: issuedCode });
   } else if (body.action === "saveSettings") {
-    if (!body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("운행 기간을 확인하세요.");
+    if (!body.startDate || !body.endDate || body.startDate > body.endDate || !body.semester1StartDate || !body.semester1EndDate || !body.semester2StartDate || !body.semester2EndDate || body.semester1StartDate > body.semester1EndDate || body.semester2StartDate > body.semester2EndDate) return jsonError("운행 기간과 학기 기간을 확인하세요.");
     const { error } = await db.from("school_settings").update({
       school_year: body.schoolYear,
       start_date: body.startDate,
       end_date: body.endDate,
+      semester1_start_date: body.semester1StartDate,
+      semester1_end_date: body.semester1EndDate,
+      semester2_start_date: body.semester2StartDate,
+      semester2_end_date: body.semester2EndDate,
       include_labor_day: body.includeLaborDay ? 1 : 0,
       include_election_day: body.includeElectionDay ? 1 : 0,
       updated_at: new Date().toISOString(),
