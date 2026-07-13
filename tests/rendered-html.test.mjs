@@ -72,3 +72,18 @@ test("간편 비밀번호와 담당 차량 권한을 서버에서 검사한다",
   assert.match(data, /체험 모드에서는 실제 데이터를 저장하지 않습니다/);
   assert.match(runs, /체험 모드에서는 실제 운행일지를 저장하지 않습니다/);
 });
+test("관리자가 차량별 운행 코드를 발급하고 운행 담당자가 코드로 입장한다", async () => {
+  const [page, data, login, operation] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/data/route.ts", root), "utf8"),
+    readFile(new URL("app/api/auth/login/route.ts", root), "utf8"),
+    readFile(new URL("app/api/auth/operation/route.ts", root), "utf8"),
+  ]);
+  assert.match(page, /버스 운행/);
+  assert.match(page, /버스 운행 코드 발급/);
+  assert.match(data, /issueOperationCode/);
+  assert.match(data, /BUS-\$\{/);
+  assert.match(login, /user\.role !== "admin"/);
+  assert.match(operation, /\^BUS-\[A-Z2-9\]\{8\}\$/);
+  assert.match(operation, /\["driver", "attendant"\]/);
+});

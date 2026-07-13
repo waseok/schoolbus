@@ -1,5 +1,5 @@
 import { assertDatabase, ensureDatabase, jsonError } from "../../../db/runtime";
-import { createPinHash, requireUser, validPin, validUsername } from "../../auth";
+import { createPinHash, requireUser } from "../../auth";
 
 type DataAction =
   | { action: "saveBus"; id: number; plateNumber?: string; driverName?: string; attendantName?: string }
@@ -13,7 +13,7 @@ type DataAction =
   | { action: "addGroup"; name: string }
   | { action: "deleteGroup"; groupId: number }
   | { action: "updateChecklistItem"; id: number; content: string; responsibleRole: "all" | "driver" | "attendant" }
-  | { action: "addUser"; username: string; pin: string; displayName?: string; role: "admin" | "driver" | "attendant"; busId?: number; startDate?: string; endDate?: string }
+  | { action: "issueOperationCode"; displayName?: string; role: "driver" | "attendant"; busId: number; startDate: string; endDate: string }
   | { action: "saveSettings"; schoolYear: number; startDate: string; endDate: string; includeLaborDay: boolean; includeElectionDay: boolean };
 
 export async function GET(request: Request) {
@@ -174,25 +174,37 @@ export async function POST(request: Request) {
     if (!body.id || !body.content?.trim() || !["all", "driver", "attendant"].includes(body.responsibleRole)) return jsonError("점검 문구와 담당 역할을 확인하세요.");
     const { error } = await db.from("checklist_items").update({ content: body.content.trim(), responsible_role: body.responsibleRole }).eq("id", body.id);
     if (error) assertDatabase(null, error);
-  } else if (body.action === "addUser") {
-    const username = body.username?.trim();
-    if (!validUsername(username) || !validPin(body.pin) || !["admin", "driver", "attendant"].includes(body.role)) return jsonError("아이디, 간편 비밀번호와 역할을 확인하세요.");
-    const pin = await createPinHash(body.pin);
-    const { data: created, error: userError } = await db.from("app_users").upsert({
-      username,
-      display_name: body.displayName?.trim() || null,
-      role: body.role,
-      pin_salt: pin.salt,
-      pin_hash: pin.hash,
-      active: 1,
-    }, { onConflict: "username" }).select("id").single();
-    const createdUser = assertDatabase(created, userError);
-    const deletion = await db.from("user_bus_assignments").delete().eq("user_id", createdUser.id);
-    if (deletion.error) assertDatabase(null, deletion.error);
-    if (body.role !== "admin" && body.busId && body.startDate && body.endDate) {
-      const { error } = await db.from("user_bus_assignments").insert({ user_id: createdUser.id, bus_id: body.busId, start_date: body.startDate, end_date: body.endDate });
-      if (error) assertDatabase(null, error);
+  } else if (body.action === "issueOperationCode") {
+    if (!body.displayName?.trim() || !["driver", "attendant"].includes(body.role) || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("운행 코드 발급 정보를 확인하세요.");
+    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    let issuedCode = "";
+    let createdUser: { id: number } | null = null;
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const random = crypto.getRandomValues(new Uint8Array(8));
+      const code = `BUS-${Array.from(random, (item) => alphabet[item % alphabet.length]).join("")}`;
+      const internalPin = await createPinHash(Array.from(crypto.getRandomValues(new Uint8Array(8)), (item) => (item % 10).toString()).join(""));
+      const { data, error } = await db.from("app_users").insert({
+        username: code,
+        display_name: body.displayName.trim(),
+        role: body.role,
+        pin_salt: internalPin.salt,
+        pin_hash: internalPin.hash,
+        active: 1,
+      }).select("id").single();
+      if (!error && data) {
+        issuedCode = code;
+        createdUser = data;
+        break;
+      }
+      if (error?.code !== "23505") assertDatabase(null, error, "운행 코드를 발급하지 못했습니다.");
     }
+    if (!createdUser) return jsonError("운행 코드 발급을 다시 시도하세요.", 500);
+    const { error } = await db.from("user_bus_assignments").insert({ user_id: createdUser.id, bus_id: body.busId, start_date: body.startDate, end_date: body.endDate });
+    if (error) {
+      await db.from("app_users").delete().eq("id", createdUser.id);
+      assertDatabase(null, error);
+    }
+    return Response.json({ ok: true, code: issuedCode });
   } else if (body.action === "saveSettings") {
     if (!body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("운행 기간을 확인하세요.");
     const { error } = await db.from("school_settings").update({

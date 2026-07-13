@@ -13,9 +13,9 @@ export async function POST(request: Request) {
   if (throttleError) assertDatabase(null, throttleError);
   if (throttle && throttle.window_started_at > windowStart && throttle.attempt_count >= 5) return jsonError("로그인 시도가 많습니다. 15분 후 다시 시도하세요.", 429);
   const { data: user, error: userError } = await db.from("app_users")
-    .select("id, pin_salt, pin_hash").eq("username", username).eq("active", 1).maybeSingle();
+    .select("id, pin_salt, pin_hash, role").eq("username", username).eq("active", 1).maybeSingle();
   if (userError) assertDatabase(null, userError);
-  if (!user || !(await verifyPin(body.pin, user.pin_salt, user.pin_hash))) {
+  if (!user || user.role !== "admin" || !(await verifyPin(body.pin, user.pin_salt, user.pin_hash))) {
     const resetWindow = !throttle || throttle.window_started_at <= windowStart;
     const { error } = await db.from("login_throttles").upsert({
       username,

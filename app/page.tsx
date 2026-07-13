@@ -5,13 +5,16 @@ import { maskName, maskPlate } from "./masking";
 import { defaultChecklistItems } from "../lib/checklist";
 
 type View = "log" | "stats" | "checklist" | "settings";
+type EntryMode = "choose" | "admin" | "operation";
 type SignedInUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant"; demo?: boolean };
 type ApiBus = { id: number; bus_number: number; plate_number: string | null; driver_name: string | null; attendant_name: string | null };
 type ApiStudent = { id: number; name: string; grade: number; class_name: string };
 type ApiAssignment = { id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string };
 type ApiGroup = { id: number; name: string };
 type ApiChecklistItem = { id: number; code: string; category: string; content: string; responsible_role: "all" | "driver" | "attendant"; sort_order: number };
-type SchoolData = { settings: Record<string, unknown> | null; buses: ApiBus[]; students: ApiStudent[]; assignments: ApiAssignment[]; exclusions: Array<{ id: number; date: string; kind: string; note: string | null }>; groups: ApiGroup[]; groupBuses: Array<{ group_id: number; bus_id: number }>; users: Array<Record<string, unknown>>; userBuses: Array<Record<string, unknown>>; checklistItems: ApiChecklistItem[] };
+type ApiUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant"; active: number };
+type ApiUserBus = { id: number; user_id: number; bus_id: number; start_date: string; end_date: string };
+type SchoolData = { settings: Record<string, unknown> | null; buses: ApiBus[]; students: ApiStudent[]; assignments: ApiAssignment[]; exclusions: Array<{ id: number; date: string; kind: string; note: string | null }>; groups: ApiGroup[]; groupBuses: Array<{ group_id: number; bus_id: number }>; users: ApiUser[]; userBuses: ApiUserBus[]; checklistItems: ApiChecklistItem[] };
 type StatisticsData = { month: string; holidays: Array<{ date: string; names: string[] }>; exclusions: Array<{ date: string; kind: string; note: string | null }>; nonOperatingRuns: Array<{ bus_id: number; date: string; reason: string | null }>; buses: Array<{ id: number; bus_number: number }> };
 
 const buses = [
@@ -43,6 +46,8 @@ export default function Home() {
   const [authForm, setAuthForm] = useState({ username: "", pin: "", displayName: "" });
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
+  const [entryMode, setEntryMode] = useState<EntryMode>("choose");
+  const [operationCode, setOperationCode] = useState("");
   const [view, setView] = useState<View>("log");
   const [busId, setBusId] = useState(1);
   const [liveBuses, setLiveBuses] = useState(buses);
@@ -60,7 +65,7 @@ export default function Home() {
   const [studentForm, setStudentForm] = useState({ name: "", grade: 1, className: "1반", busId: 1, stopName: "", startDate: "2026-03-02", endDate: "2027-02-28" });
   const [reassignForm, setReassignForm] = useState({ studentId: 0, busId: 1, stopName: "", startDate: "2026-03-02", endDate: "2027-02-28" });
   const [exclusionForm, setExclusionForm] = useState({ date: "", note: "재량휴업일" });
-  const [accountForm, setAccountForm] = useState({ username: "", pin: "", displayName: "", role: "driver" as "admin" | "driver" | "attendant", busId: 1, startDate: "2026-03-02", endDate: "2027-02-28" });
+  const [accountForm, setAccountForm] = useState({ displayName: "", role: "driver" as "driver" | "attendant", busId: 1, startDate: "2026-03-02", endDate: "2027-02-28" });
   const [groupForm, setGroupForm] = useState({ name: "새 점검 세트", groupId: 0, busIds: [] as number[] });
   const [settingsForm, setSettingsForm] = useState({ schoolYear: 2026, startDate: "2026-03-02", endDate: "2027-02-28", includeLaborDay: true, includeElectionDay: true });
   const [checklistDrafts, setChecklistDrafts] = useState<Record<number, { content: string; responsibleRole: "all" | "driver" | "attendant" }>>({});
@@ -206,6 +211,20 @@ export default function Home() {
     setAuthBusy(false);
   }
 
+  async function submitOperationLogin(event: React.FormEvent) {
+    event.preventDefault();
+    setAuthBusy(true);
+    setAuthError("");
+    const response = await fetch("/api/auth/operation", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: operationCode }) });
+    const result = await response.json() as { error?: string };
+    if (!response.ok) { setAuthError(result.error ?? "운행 코드로 로그인하지 못했습니다."); setAuthBusy(false); return; }
+    const me = await fetch("/api/auth/me");
+    const profile = await me.json() as { user: SignedInUser | null };
+    setAuthUser(profile.user);
+    setView("log");
+    setAuthBusy(false);
+  }
+
   async function enterDemo() {
     setAuthBusy(true);
     setAuthError("");
@@ -225,6 +244,8 @@ export default function Home() {
     await fetch("/api/auth/logout", { method: "POST" });
     setAuthUser(null);
     setView("log");
+    setEntryMode("choose");
+    setOperationCode("");
   }
 
   async function saveRun() {
@@ -252,6 +273,15 @@ export default function Home() {
     return response.ok;
   }
 
+  async function issueOperationCode() {
+    const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "issueOperationCode", ...accountForm }) });
+    const result = await response.json() as { error?: string; code?: string };
+    if (!response.ok) { setDataMessage(result.error ?? "운행 코드를 발급하지 못했습니다."); return; }
+    setDataMessage(`운행 코드가 발급되었습니다: ${result.code} — 담당자에게 전달하세요.`);
+    setAccountForm((current) => ({ ...current, displayName: "" }));
+    await loadSchoolData();
+  }
+
   function toggleBoarding(id: number) {
     setSaved(false);
     setStudents((current) => current.map((student) => student.id === id ? { ...student, boarded: !student.boarded } : student));
@@ -268,15 +298,32 @@ export default function Home() {
     <main className="auth-screen">
       <section className="auth-card">
         <div className="auth-brand"><div className="brand-mark">안전</div><div><strong>통학버스 안전일지</strong><span>학교 등교버스 운행 관리</span></div></div>
-        <div className="auth-copy"><span className="eyebrow">{needsSetup ? "첫 관리자 설정" : "간편 로그인"}</span><h1>{needsSetup ? "업무담당자 계정을 만드세요" : "담당 계정으로 로그인하세요"}</h1><p>{needsSetup ? "처음 한 번만 관리자 아이디와 숫자 비밀번호를 설정합니다." : "관리자가 발급한 아이디와 간편 비밀번호를 입력하세요."}</p></div>
-        <form onSubmit={submitAuth} className="auth-form">
-          {needsSetup && <label>담당자 이름<input value={authForm.displayName} onChange={(event) => setAuthForm((current) => ({ ...current, displayName: event.target.value }))} placeholder="예: 홍길동" /></label>}
-          <label>아이디<input value={authForm.username} onChange={(event) => setAuthForm((current) => ({ ...current, username: event.target.value }))} placeholder="3~24자" autoComplete="username" /></label>
-          <label>간편 비밀번호<input type="password" inputMode="numeric" value={authForm.pin} onChange={(event) => setAuthForm((current) => ({ ...current, pin: event.target.value }))} placeholder="숫자 4~12자리" autoComplete={needsSetup ? "new-password" : "current-password"} /></label>
-          {authError && <p className="auth-error">{authError}</p>}
-          <button disabled={authBusy}>{authBusy ? "확인 중…" : needsSetup ? "관리자 설정 완료" : "로그인"}</button>
-        </form>
-        <div className="demo-access"><span>계정을 만들기 전에 화면을 먼저 확인할 수 있습니다.</span><button type="button" onClick={enterDemo} disabled={authBusy}>샘플 데이터로 체험하기</button></div>
+        {entryMode === "choose" ? <>
+          <div className="auth-copy"><span className="eyebrow">시작하기</span><h1>어떤 업무를 하시나요?</h1><p>관리자는 전체 설정과 기록을 관리하고, 운행 담당자는 배부받은 코드로 해당 차량의 일지를 작성합니다.</p></div>
+          <div className="entry-choices">
+            <button type="button" onClick={() => { setEntryMode("admin"); setAuthError(""); }}><strong>관리자</strong><span>차량·학생·점검과 운행 코드를 관리합니다.</span></button>
+            <button type="button" onClick={() => { setEntryMode("operation"); setAuthError(""); }}><strong>버스 운행</strong><span>배부받은 코드로 운행일지를 작성합니다.</span></button>
+          </div>
+          <div className="demo-access"><span>계정을 만들기 전에 화면을 먼저 확인할 수 있습니다.</span><button type="button" onClick={enterDemo} disabled={authBusy}>샘플 데이터로 체험하기</button></div>
+        </> : entryMode === "admin" ? <>
+          <div className="auth-copy"><span className="eyebrow">{needsSetup ? "첫 관리자 설정" : "관리자 로그인"}</span><h1>{needsSetup ? "업무담당자 계정을 만드세요" : "관리자 계정으로 로그인하세요"}</h1><p>{needsSetup ? "처음 한 번만 관리자 아이디와 숫자 비밀번호를 설정합니다." : "관리자만 전체 운행 기록과 설정을 관리할 수 있습니다."}</p></div>
+          <form onSubmit={submitAuth} className="auth-form">
+            {needsSetup && <label>담당자 이름<input value={authForm.displayName} onChange={(event) => setAuthForm((current) => ({ ...current, displayName: event.target.value }))} placeholder="예: 홍길동" /></label>}
+            <label>아이디<input value={authForm.username} onChange={(event) => setAuthForm((current) => ({ ...current, username: event.target.value }))} placeholder="3~24자" autoComplete="username" /></label>
+            <label>간편 비밀번호<input type="password" inputMode="numeric" value={authForm.pin} onChange={(event) => setAuthForm((current) => ({ ...current, pin: event.target.value }))} placeholder="숫자 4~12자리" autoComplete={needsSetup ? "new-password" : "current-password"} /></label>
+            {authError && <p className="auth-error">{authError}</p>}
+            <button disabled={authBusy}>{authBusy ? "확인 중…" : needsSetup ? "관리자 설정 완료" : "관리자 로그인"}</button>
+            <button type="button" className="back-link" onClick={() => { setEntryMode("choose"); setAuthError(""); }}>처음 화면으로</button>
+          </form>
+        </> : <>
+          <div className="auth-copy"><span className="eyebrow">버스 운행</span><h1>운행 코드를 입력하세요</h1><p>관리자가 배부한 코드는 담당 차량과 사용 기간에 맞춰 운행일지 작성 권한을 부여합니다.</p></div>
+          <form onSubmit={submitOperationLogin} className="auth-form">
+            <label>운행 코드<input value={operationCode} onChange={(event) => setOperationCode(event.target.value.toUpperCase())} placeholder="예: BUS-ABCDEFGH" autoCapitalize="characters" autoComplete="off" /></label>
+            {authError && <p className="auth-error">{authError}</p>}
+            <button disabled={authBusy}>{authBusy ? "확인 중…" : "운행일지 시작"}</button>
+            <button type="button" className="back-link" onClick={() => { setEntryMode("choose"); setAuthError(""); }}>처음 화면으로</button>
+          </form>
+        </>}
       </section>
     </main>
   );
@@ -371,7 +418,7 @@ export default function Home() {
             </div>
 
             <div className="settings-grid settings-lower">
-              <form className="main-panel settings-form-panel" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "addUser", ...accountForm }, "사용자 계정을 저장했습니다."); }}><div className="panel-heading"><div><h2>운전자·동승자 계정</h2><p>아이디와 간편 비밀번호를 발급하고 담당 차량 기간을 설정합니다.</p></div></div><div className="form-grid"><label>표시 이름<input value={accountForm.displayName} onChange={(event) => setAccountForm((current) => ({ ...current, displayName: event.target.value }))} /></label><label>역할<select value={accountForm.role} onChange={(event) => setAccountForm((current) => ({ ...current, role: event.target.value as typeof current.role }))}><option value="driver">운전자</option><option value="attendant">동승자</option><option value="admin">관리자</option></select></label><label>로그인 아이디<input value={accountForm.username} onChange={(event) => setAccountForm((current) => ({ ...current, username: event.target.value }))} /></label><label>간편 비밀번호<input type="password" inputMode="numeric" value={accountForm.pin} onChange={(event) => setAccountForm((current) => ({ ...current, pin: event.target.value }))} placeholder="숫자 4~12자리" /></label>{accountForm.role !== "admin" && <><label>담당 차량<select value={accountForm.busId} onChange={(event) => setAccountForm((current) => ({ ...current, busId: Number(event.target.value) }))}>{liveBuses.map((bus) => <option key={bus.id} value={bus.id}>{bus.label}</option>)}</select></label><label>담당 시작일<input type="date" value={accountForm.startDate} onChange={(event) => setAccountForm((current) => ({ ...current, startDate: event.target.value }))} /></label><label>담당 종료일<input type="date" value={accountForm.endDate} onChange={(event) => setAccountForm((current) => ({ ...current, endDate: event.target.value }))} /></label></>}</div><div className="form-footer"><button>계정 저장</button></div></form>
+              <form className="main-panel settings-form-panel" onSubmit={async (event) => { event.preventDefault(); await issueOperationCode(); }}><div className="panel-heading"><div><h2>버스 운행 코드 발급</h2><p>운전자 또는 동승자에게 코드를 전달하면 담당 차량과 기간 내에서만 운행일지를 작성할 수 있습니다.</p></div></div><div className="form-grid"><label>수령자 이름<input required value={accountForm.displayName} onChange={(event) => setAccountForm((current) => ({ ...current, displayName: event.target.value }))} placeholder="예: 홍길동" /></label><label>역할<select value={accountForm.role} onChange={(event) => setAccountForm((current) => ({ ...current, role: event.target.value as typeof current.role }))}><option value="driver">운전자</option><option value="attendant">동승자</option></select></label><label>담당 차량<select value={accountForm.busId} onChange={(event) => setAccountForm((current) => ({ ...current, busId: Number(event.target.value) }))}>{liveBuses.map((bus) => <option key={bus.id} value={bus.id}>{bus.label}</option>)}</select></label><label>유효 시작일<input type="date" value={accountForm.startDate} onChange={(event) => setAccountForm((current) => ({ ...current, startDate: event.target.value }))} /></label><label>유효 종료일<input type="date" value={accountForm.endDate} onChange={(event) => setAccountForm((current) => ({ ...current, endDate: event.target.value }))} /></label></div><div className="form-footer"><button>운행 코드 발급</button></div><div className="issued-code-list"><strong>발급된 코드</strong>{(schoolData?.users ?? []).filter((user) => user.role === "driver" || user.role === "attendant").map((user) => { const assignment = schoolData?.userBuses.find((item) => item.user_id === user.id); const assignedBus = schoolData?.buses.find((bus) => bus.id === assignment?.bus_id); return <div className="issued-code-row" key={user.id}><code>{user.username}</code><span>{user.display_name ?? "이름 없음"} · {user.role === "driver" ? "운전자" : "동승자"} · {assignedBus ? `${assignedBus.bus_number}호차` : "차량 미배정"}</span><small>{assignment ? `${assignment.start_date} ~ ${assignment.end_date}` : "기간 미설정"}</small></div>; })}</div></form>
 
               <form className="summary-card settings-card" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "addGroup", name: groupForm.name }, "점검 세트를 추가했습니다."); }}><span>점검 세트 관리</span><label>세트 선택<select value={groupForm.groupId} onChange={(event) => { const groupId = Number(event.target.value); setGroupForm((current) => ({ ...current, groupId, busIds: schoolData?.groupBuses.filter((item) => item.group_id === groupId).map((item) => item.bus_id) ?? [] })); }}>{schoolData?.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="bus-check-grid">{liveBuses.map((bus) => <label key={bus.id}><input type="checkbox" checked={groupForm.busIds.includes(bus.id)} onChange={(event) => setGroupForm((current) => ({ ...current, busIds: event.target.checked ? [...current.busIds, bus.id] : current.busIds.filter((id) => id !== bus.id) }))} />{bus.label}</label>)}</div><button type="button" className="primary-full" onClick={() => adminAction({ action: "saveGroupBuses", groupId: groupForm.groupId, busIds: groupForm.busIds }, "점검 세트 차량 구성을 저장했습니다.")}>차량 묶음 저장</button><label>새 세트 이름<input value={groupForm.name} onChange={(event) => setGroupForm((current) => ({ ...current, name: event.target.value }))} /></label><button className="secondary-button full">새 세트 추가</button><button type="button" className="danger-button" onClick={() => adminAction({ action: "deleteGroup", groupId: groupForm.groupId }, "점검 세트를 삭제했습니다.")}>선택 세트 삭제</button></form>
             </div>
