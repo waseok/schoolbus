@@ -1,7 +1,7 @@
 import { assertDatabase, ensureDatabase } from "../db/runtime";
 
 export type AppRole = "admin" | "driver" | "attendant";
-export type AuthUser = { id: number; username: string; display_name: string | null; role: AppRole };
+export type AuthUser = { id: number; username: string; display_name: string | null; role: AppRole; demo?: boolean };
 
 const encoder = new TextEncoder();
 
@@ -72,7 +72,20 @@ export function clearSessionCookie(request: Request) {
   return sessionCookie(request, "", 0);
 }
 
+export function demoSessionCookie(request: Request, maxAge = 60 * 60) {
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `school_bus_demo=1; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+export function clearDemoSessionCookie(request: Request) {
+  const secure = new URL(request.url).protocol === "https:" ? "; Secure" : "";
+  return `school_bus_demo=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`;
+}
+
 export async function currentUser(request: Request): Promise<AuthUser | null> {
+  if (readCookie(request, "school_bus_demo") === "1") {
+    return { id: 0, username: "demo", display_name: "체험 관리자", role: "admin", demo: true };
+  }
   const token = readCookie(request, "school_bus_session");
   if (!token) return null;
   const db = await ensureDatabase();

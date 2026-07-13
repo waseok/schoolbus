@@ -35,6 +35,41 @@ export async function GET(request: Request) {
   for (const result of results) if (result.error) assertDatabase(null, result.error);
   const [settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems] = results.map((result) => result.data);
 
+  if (user.demo) {
+    const samplePeople = [
+      { id: 9001, name: "김도윤", grade: 1, class_name: "2반", active: 1 },
+      { id: 9002, name: "박서연", grade: 1, class_name: "3반", active: 1 },
+      { id: 9003, name: "이준우", grade: 2, class_name: "1반", active: 1 },
+      { id: 9004, name: "정하윤", grade: 2, class_name: "2반", active: 1 },
+      { id: 9005, name: "최지안", grade: 3, class_name: "1반", active: 1 },
+    ];
+    const stopNames = ["은빛마을 정류장", "중앙공원 앞", "한솔아파트", "중앙공원 앞", "은빛마을 정류장"];
+    const sampleAssignments = samplePeople.map((student, index) => ({
+      id: 9100 + index,
+      student_id: student.id,
+      bus_id: Number((buses as Array<{ id: number }>)[index < 3 ? 0 : 1]?.id ?? 1),
+      stop_name: stopNames[index],
+      start_date: "2026-03-02",
+      end_date: "2027-02-28",
+    }));
+    const plates = ["78가 1234", "71나 5682", "75다 3409", "73라 8261"];
+    const drivers = ["김민수", "박서준", "이정희", "최준호"];
+    const demoBuses = (buses as Array<Record<string, unknown>>).map((bus, index) => index < 4 ? { ...bus, plate_number: plates[index], driver_name: drivers[index], attendant_name: `${["한지우", "윤서아", "오하린", "문예린"][index]}` } : bus);
+    return Response.json({
+      settings,
+      buses: demoBuses,
+      students: samplePeople,
+      assignments: sampleAssignments,
+      exclusions,
+      groups,
+      groupBuses,
+      users: [{ id: 0, username: "demo", display_name: "체험 관리자", role: "admin", active: 1 }],
+      userBuses: [],
+      checklistItems,
+      demo: true,
+    });
+  }
+
   if (user.role === "admin") {
     return Response.json({ settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems });
   }
@@ -58,6 +93,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const user = await requireUser(request, ["admin"]);
   if (!user) return jsonError("관리자 권한이 필요합니다.", 403);
+  if (user.demo) return jsonError("체험 모드에서는 실제 데이터를 저장하지 않습니다.", 403);
   const db = await ensureDatabase();
   const body = await request.json() as DataAction;
 

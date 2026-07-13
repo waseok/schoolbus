@@ -5,7 +5,7 @@ import { maskName, maskPlate } from "./masking";
 import { defaultChecklistItems } from "../lib/checklist";
 
 type View = "log" | "stats" | "checklist" | "settings";
-type SignedInUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant" };
+type SignedInUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant"; demo?: boolean };
 type ApiBus = { id: number; bus_number: number; plate_number: string | null; driver_name: string | null; attendant_name: string | null };
 type ApiStudent = { id: number; name: string; grade: number; class_name: string };
 type ApiAssignment = { id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string };
@@ -206,6 +206,21 @@ export default function Home() {
     setAuthBusy(false);
   }
 
+  async function enterDemo() {
+    setAuthBusy(true);
+    setAuthError("");
+    const response = await fetch("/api/auth/demo", { method: "POST" });
+    const result = await response.json() as { user?: SignedInUser; error?: string };
+    if (!response.ok || !result.user) {
+      setAuthError(result.error ?? "체험 모드를 시작하지 못했습니다.");
+      setAuthBusy(false);
+      return;
+    }
+    setAuthUser(result.user);
+    setView("log");
+    setAuthBusy(false);
+  }
+
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setAuthUser(null);
@@ -261,6 +276,7 @@ export default function Home() {
           {authError && <p className="auth-error">{authError}</p>}
           <button disabled={authBusy}>{authBusy ? "확인 중…" : needsSetup ? "관리자 설정 완료" : "로그인"}</button>
         </form>
+        <div className="demo-access"><span>계정을 만들기 전에 화면을 먼저 확인할 수 있습니다.</span><button type="button" onClick={enterDemo} disabled={authBusy}>샘플 데이터로 체험하기</button></div>
       </section>
     </main>
   );
@@ -284,8 +300,9 @@ export default function Home() {
       <section className="workspace">
         <header className="topbar">
           <div><span className="eyebrow">2026학년도</span><h1>{view === "log" ? "오늘의 운행일지" : view === "stats" ? "월별 미운행 통계" : view === "checklist" ? "안전 점검 체크리스트" : "차량·학생 설정"}</h1></div>
-          <div className="account-area"><div className="today"><span>{authUser.role === "admin" ? "업무담당자" : authUser.role === "driver" ? "운전자" : "동승자"}</span><strong>{authUser.display_name ?? authUser.username}</strong></div><button onClick={logout}>로그아웃</button></div>
+          <div className="account-area"><div className="today"><span>{authUser.demo ? "읽기 전용 체험" : authUser.role === "admin" ? "업무담당자" : authUser.role === "driver" ? "운전자" : "동승자"}</span><strong>{authUser.display_name ?? authUser.username}</strong></div><button onClick={logout}>{authUser.demo ? "체험 종료" : "로그아웃"}</button></div>
         </header>
+        {authUser.demo && <div className="demo-banner"><strong>체험 모드</strong><span>샘플 데이터로 화면을 둘러보는 중입니다. 입력 내용은 실제로 저장되지 않습니다.</span></div>}
 
         {view === "log" && (
           <div className="content-grid">

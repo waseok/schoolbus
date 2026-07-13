@@ -47,6 +47,7 @@ export async function POST(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessGroup(user, body.groupId, body.month))) return jsonError("담당 차량이 포함된 점검표만 작성할 수 있습니다.", 403);
+  if (user.demo) return jsonError("체험 모드에서는 실제 점검표를 저장하지 않습니다.", 403);
   const { data: activeItems, error: itemError } = await db.from("checklist_items").select("code, responsible_role").eq("active", 1).order("sort_order");
   if (itemError) assertDatabase(null, itemError);
   const items = (activeItems ?? []) as Array<{ code: string; responsible_role: "all" | "driver" | "attendant" }>;

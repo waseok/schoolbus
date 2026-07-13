@@ -55,14 +55,20 @@ test("차량번호와 운전자 성명의 가운데 부분을 가린다", () => 
 });
 
 test("간편 비밀번호와 담당 차량 권한을 서버에서 검사한다", async () => {
-  const [auth, runs, data] = await Promise.all([
+  const [auth, runs, data, page, demo] = await Promise.all([
     readFile(new URL("app/auth.ts", root), "utf8"),
     readFile(new URL("app/api/runs/route.ts", root), "utf8"),
     readFile(new URL("app/api/data/route.ts", root), "utf8"),
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/api/auth/demo/route.ts", root), "utf8"),
   ]);
   assert.match(auth, /PBKDF2/);
   assert.match(auth, /iterations: 120_000/);
   assert.match(auth, /HttpOnly/);
   assert.match(runs, /canAccessBus/);
   assert.match(data, /requireUser\(request, \["admin"\]\)/);
+  assert.match(page, /샘플 데이터로 체험하기/);
+  assert.match(demo, /demoSessionCookie/);
+  assert.match(data, /체험 모드에서는 실제 데이터를 저장하지 않습니다/);
+  assert.match(runs, /체험 모드에서는 실제 운행일지를 저장하지 않습니다/);
 });

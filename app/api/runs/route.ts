@@ -12,6 +12,16 @@ export async function GET(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessBus(user, busId, date))) return jsonError("담당 차량만 조회할 수 있습니다.", 403);
+  if (user.demo) {
+    return Response.json({
+      run: { id: 0, bus_id: busId, date, status: "operated", reason: null, note: "체험용 운행일지" },
+      boarding: [
+        { student_id: 9001, boarded: 1, note: null },
+        { student_id: 9002, boarded: 1, note: null },
+        { student_id: 9003, boarded: 0, note: "병원 진료" },
+      ],
+    });
+  }
 
   const { data: run, error: runError } = await db.from("daily_runs").select("*").eq("bus_id", busId).eq("date", date).maybeSingle();
   if (runError) assertDatabase(null, runError);
@@ -28,6 +38,7 @@ export async function POST(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   if (!(await canAccessBus(user, body.busId, body.date))) return jsonError("담당 차량만 기록할 수 있습니다.", 403);
+  if (user.demo) return jsonError("체험 모드에서는 실제 운행일지를 저장하지 않습니다.", 403);
 
   const { data: run, error: runError } = await db.from("daily_runs").upsert({
     bus_id: body.busId,
