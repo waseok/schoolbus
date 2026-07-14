@@ -1,4 +1,5 @@
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import { ensureDatabase, jsonError } from "../../../../db/runtime";
 import { requireUser } from "../../../auth";
 
@@ -6,6 +7,16 @@ export const runtime = "nodejs";
 
 type ImportRow = { name: string; grade: number; className: string; busNumber: number; stopName: string };
 const headers = ["이름", "학년", "반", "차량번호", "승차장소"];
+
+async function loadWorkbook(file: Blob) {
+  const archive = await JSZip.loadAsync(await file.arrayBuffer());
+  // 일부 프로그램이 생성한 app.xml은 ExcelJS 4.4에서 파싱 오류를 일으킨다.
+  // 학생 등록에 필요하지 않은 문서 속성이므로 제거한 뒤 표 데이터만 읽는다.
+  archive.remove("docProps/app.xml");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await archive.generateAsync({ type: "arraybuffer" }));
+  return workbook;
+}
 
 export async function POST(request: Request) {
   try {
@@ -19,8 +30,7 @@ export async function POST(request: Request) {
     if (!uploadedFile || typeof uploadedFile === "string" || !("arrayBuffer" in uploadedFile) || uploadedFile.size === 0 || uploadedFile.size > 5 * 1024 * 1024) return jsonError("5MB 이하의 엑셀 파일을 선택하세요.");
     if (!/^20\d{2}-\d{2}-\d{2}$/.test(startDate) || !/^20\d{2}-\d{2}-\d{2}$/.test(endDate) || startDate > endDate) return jsonError("일괄 적용할 배정 기간을 확인하세요.");
 
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(await uploadedFile.arrayBuffer());
+    const workbook = await loadWorkbook(uploadedFile);
     const sheet = workbook.worksheets[0];
     if (!sheet) return jsonError("학생등록 시트를 찾을 수 없습니다.");
     const actualHeaders = ((sheet.getRow(1).values ?? []) as ExcelJS.CellValue[]).slice(1).map((value) => String(value ?? "").trim());
