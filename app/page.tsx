@@ -73,6 +73,7 @@ export default function Home() {
   const [liveBuses, setLiveBuses] = useState(buses);
   const [schoolData, setSchoolData] = useState<SchoolData | null>(null);
   const [dataMessage, setDataMessage] = useState("");
+  const [dataBusy, setDataBusy] = useState(false);
   const [selectedDate, setSelectedDate] = useState(localDate);
   const [students, setStudents] = useState(initialStudents);
   const [answers, setAnswers] = useState<Record<string, "예" | "아니요" | "해당없음">>({});
@@ -85,7 +86,7 @@ export default function Home() {
   const [settingsBusId, setSettingsBusId] = useState(1);
   const [busForm, setBusForm] = useState({ plateNumber: "", driverName: "", attendantName: "" });
   const [studentForm, setStudentForm] = useState({ name: "", grade: 1, className: "1반", busId: 1, stopName: "", startDate: "2026-03-02", endDate: "2027-02-28" });
-  const [studentEditForm, setStudentEditForm] = useState({ id: 0, name: "", grade: 1, className: "" });
+  const [studentEditForm, setStudentEditForm] = useState({ id: 0, name: "", grade: 1, className: "", assignmentId: 0, stopName: "" });
   const [studentSearch, setStudentSearch] = useState("");
   const [reassignForm, setReassignForm] = useState({ studentId: 0, busId: 1, stopName: "", startDate: "2026-03-02", endDate: "2027-02-28" });
   const [exclusionForm, setExclusionForm] = useState({ date: "", note: "재량휴업일" });
@@ -140,12 +141,13 @@ export default function Home() {
   }, [schoolData]);
 
   useEffect(() => {
+    if (view !== "log") return;
     const year = selectedDate.slice(0, 4);
     fetch(`/api/holidays?year=${year}`)
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then((data: { holidays: Array<{ date: string; names: string[] }> }) => setHolidays(data.holidays))
       .catch(() => setHolidays([]));
-  }, [selectedDate]);
+  }, [selectedDate, view]);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -159,7 +161,7 @@ export default function Home() {
   }, [authUser]);
 
   useEffect(() => {
-    if (!schoolData || !authUser) return;
+    if (view !== "log" || !schoolData || !authUser) return;
     const activeAssignments = schoolData.assignments.filter((assignment) => assignment.bus_id === busId && assignment.start_date <= selectedDate && assignment.end_date >= selectedDate);
     const rows = activeAssignments.flatMap((assignment) => {
       const student = schoolData.students.find((item) => item.id === assignment.student_id);
@@ -177,7 +179,7 @@ export default function Home() {
         }));
       })
       .catch(() => undefined);
-  }, [schoolData, authUser, busId, selectedDate]);
+  }, [schoolData, authUser, busId, selectedDate, view]);
 
   useEffect(() => {
     if (view === "stats" && authUser?.role === "admin") {
@@ -217,7 +219,8 @@ export default function Home() {
   useEffect(() => {
     if (!studentEditForm.id && schoolData?.students.length) {
       const student = schoolData.students[0];
-      setStudentEditForm({ id: student.id, name: student.name, grade: student.grade, className: student.class_name });
+      const assignment = schoolData.assignments.find((item) => item.student_id === student.id);
+      setStudentEditForm({ id: student.id, name: student.name, grade: student.grade, className: student.class_name, assignmentId: assignment?.id ?? 0, stopName: assignment?.stop_name ?? "" });
     }
   }, [schoolData, studentEditForm.id]);
 
@@ -303,27 +306,43 @@ export default function Home() {
 
   async function saveRun() {
     if (excludedReason) return;
-    setDataMessage("");
+    setDataBusy(true);
+    setDataMessage("운행일지를 저장 중입니다…");
     const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ busId, date: selectedDate, status: runStatus, reason: runStatus === "not_operated" ? runReason : "", boarding: runStatus === "operated" ? students.map((student) => ({ studentId: student.id, boarded: student.boarded, note: student.note })) : [] }) });
     const result = await response.json() as { error?: string };
-    if (!response.ok) { setDataMessage(result.error ?? "운행일지를 저장하지 못했습니다."); return; }
+    if (!response.ok) { setDataMessage(result.error ?? "운행일지를 저장하지 못했습니다."); setDataBusy(false); return; }
     setSaved(true);
     setDataMessage("운행일지가 저장되었습니다.");
+    setDataBusy(false);
   }
 
   async function saveInspection(status: "draft" | "complete" = "draft") {
     if (!inspectionGroupId) return;
+    setDataBusy(true);
+    setDataMessage(status === "complete" ? "점검표를 완료 처리 중입니다…" : "점검표를 임시 저장 중입니다…");
     const response = await fetch("/api/inspections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ month: inspectionMonth, groupId: inspectionGroupId, status, answers: Object.entries(answers).map(([itemCode, answer]) => ({ itemCode, answer: answer === "예" ? "yes" : answer === "아니요" ? "no" : "not_applicable" })) }) });
     const result = await response.json() as { error?: string };
     setDataMessage(response.ok ? "안전 점검표가 저장되었습니다." : result.error ?? "점검표를 저장하지 못했습니다.");
+    setDataBusy(false);
   }
 
   async function adminAction(body: Record<string, unknown>, successMessage: string) {
-    const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-    const result = await response.json() as { error?: string };
-    setDataMessage(response.ok ? successMessage : result.error ?? "저장하지 못했습니다.");
-    if (response.ok) await loadSchoolData();
-    return response.ok;
+    const action = String(body.action ?? "save");
+    const progress = action === "updateStudent" ? "학생 정보를 수정" : action.includes("delete") ? "삭제" : action.includes("move") || action.includes("reassign") ? "학생 배정을 변경" : "저장";
+    setDataBusy(true);
+    setDataMessage(`${progress} 중입니다…`);
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      setDataMessage(response.ok ? successMessage : result.error ?? `${progress}하지 못했습니다.`);
+      if (response.ok) await loadSchoolData();
+      return response.ok;
+    } catch {
+      setDataMessage("서버와 통신하지 못했습니다. 잠시 후 다시 시도하세요.");
+      return false;
+    } finally {
+      setDataBusy(false);
+    }
   }
 
   async function issueOperationCode() {
@@ -437,6 +456,7 @@ export default function Home() {
           <div><span className="eyebrow">{settingsForm.schoolYear}학년도 · {selectedDate >= settingsForm.semester2StartDate && selectedDate <= settingsForm.semester2EndDate ? "2학기" : "1학기"}</span><h1>{view === "log" ? "오늘의 운행일지" : view === "stats" ? "미운행 통계" : view === "checklist" ? "안전 점검 체크리스트" : "통학버스 관리"}</h1></div>
           <div className="account-area"><div className="today"><span>{authUser.demo ? "읽기 전용 체험" : authUser.role === "admin" ? "업무담당자" : authUser.role === "driver" ? "운전자" : "동승자"}</span><strong>{authUser.display_name ?? authUser.username}</strong></div><button onClick={logout}>{authUser.demo ? "체험 종료" : "로그아웃"}</button></div>
         </header>
+        {dataMessage && <div className={`action-message ${dataBusy ? "working" : ""}`} role="status">{dataBusy && <span className="loading-dot" />} {dataMessage}</div>}
         {authUser.demo && <div className="demo-banner"><strong>체험 모드</strong><span>샘플 데이터로 화면을 둘러보는 중입니다. 입력 내용은 실제로 저장되지 않습니다.</span></div>}
 
         {view === "log" && (
@@ -477,7 +497,7 @@ export default function Home() {
             <div className="panel-heading"><div><span className="eyebrow">안전 점검 사이트 입력용</span><h2>월별 미운행 날짜</h2><p>공휴일·재량휴업일과 실제 미운행 기록을 차량별로 모았습니다.</p></div><div className="export-actions"><a className="secondary-button" href={`/api/exports/runs?month=${statisticsMonth}`}>📥 운행일지 다운로드</a><button className="secondary-button" onClick={() => downloadCsv(`${statisticsMonth}_미운행통계.csv`, [["호차", "날짜", "사유"], ...statisticRows.flatMap((row) => row.dates.map((item) => [row.bus, item.date, item.reason]))])}>📥 미운행 통계 다운로드</button><label className="month-control">조회 월<input type="month" value={statisticsMonth} onChange={(event) => setStatisticsMonth(event.target.value)} /></label></div></div>
             <div className="stats-summary"><div><span>운행 대상 차량</span><strong>{statistics?.buses.length ?? 0}대</strong></div><div><span>공통 미운행일</span><strong>{(statistics?.holidays.length ?? 0) + (statistics?.exclusions.length ?? 0)}일</strong></div><div><span>개별 미운행</span><strong>{statistics?.nonOperatingRuns.length ?? 0}건</strong></div></div>
             <div className="stats-list">{statisticRows.map((row) => <div className="stats-row" key={row.bus}><strong>{row.bus}</strong><div>{row.dates.length ? row.dates.map((item) => <span className={`nonoperating-date ${item.type}`} key={`${item.date}-${item.reason}`}><b>{koreanDate(item.date)}</b><small>{item.reason}</small></span>) : <span>미운행 없음</span>}</div><small>{row.dates.length}일</small></div>)}</div>
-            <div className="student-absence-panel"><h3>학생별 미탑승 통계</h3><p>학생을 선택하면 해당 학생의 미탑승일, 사유와 총 횟수를 확인합니다.</p><select value={selectedAbsenceStudent} onChange={(event) => setSelectedAbsenceStudent(event.target.value)}><option value="">학생 선택</option>{Array.from(new Set((studentAbsences?.records ?? []).map((record) => record.name))).sort().map((name) => <option key={name} value={name}>{name}</option>)}</select>{selectedAbsenceStudent && <><strong className="absence-total">{selectedAbsenceStudent} · 총 {(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).length}일 미탑승</strong><div className="absence-table">{(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).map((record, index) => <div key={`${record.date}-${index}`}><strong>{koreanDate(record.date)} · {record.busNumber}호차</strong><small>{record.note}</small></div>)}</div></>}{!selectedAbsenceStudent && <div className="empty-state"><strong>학생을 선택하세요.</strong></div>}</div>
+            <div className="student-absence-panel"><h3>학생별 미탑승 통계</h3><p>학생을 선택하면 해당 학생의 미탑승일, 사유와 총 횟수를 확인합니다.</p><select value={selectedAbsenceStudent} onChange={(event) => setSelectedAbsenceStudent(event.target.value)}><option value="">학생 선택</option>{(schoolData?.students ?? []).map((student) => <option key={student.id} value={student.name}>{student.name} · {student.grade}학년 {student.class_name}</option>)}</select>{selectedAbsenceStudent && <><strong className="absence-total">{selectedAbsenceStudent} · 총 {(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).length}일 미탑승</strong><div className="absence-table">{(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).map((record, index) => <div key={`${record.date}-${index}`}><strong>{koreanDate(record.date)} · {record.busNumber}호차</strong><small>{record.note}</small></div>)}{!(studentAbsences?.records ?? []).some((record) => record.name === selectedAbsenceStudent) && <div className="empty-state"><strong>이 달의 미탑승 기록이 없습니다.</strong></div>}</div></>}{!selectedAbsenceStudent && <div className="empty-state"><strong>학생을 선택하세요.</strong></div>}</div>
             <p className="prototype-note">공휴일과 재량휴업일은 모든 차량에 공통으로 포함되며, 차량별 미운행 기록이 추가됩니다.</p>
           </section>
         )}
@@ -496,7 +516,7 @@ export default function Home() {
             {settingsSection === "students" && <button className="secondary-button csv-download" onClick={() => downloadCsv("학생명단.csv", [["이름", "학년", "반", "호차", "승차장소"], ...(schoolData?.assignments.flatMap((assignment) => { const student = schoolData.students.find((item) => item.id === assignment.student_id); const bus = schoolData.buses.find((item) => item.id === assignment.bus_id); return student && bus ? [[student.name, String(student.grade), student.class_name, `${bus.bus_number}호차`, assignment.stop_name ?? ""]] : []; }) ?? [])])}>학생명단 CSV 내보내기</button>}
             {settingsSection === "buses" && <div className="main-panel assigned-students"><div className="panel-heading"><div><h2>{liveBuses.find((bus) => bus.id === settingsBusId)?.label ?? "선택 차량"} 배정 학생</h2><p>현재 선택한 차량의 모든 배정 이력입니다.</p></div></div>{schoolData?.assignments.filter((assignment) => assignment.bus_id === settingsBusId).map((assignment) => { const student = schoolData.students.find((item) => item.id === assignment.student_id); return student ? <div className="assigned-student-row" key={assignment.id}><strong>{student.name}</strong><span>{student.grade}학년 {student.class_name} · {assignment.stop_name ?? "승차장소 미등록"}</span><small>{assignment.start_date} ~ {assignment.end_date}</small></div> : null; })}</div>}
             {settingsSection === "students" && <form className="main-panel import-panel" onSubmit={importStudents}><div className="panel-heading"><div><h2>엑셀 학생 일괄등록</h2><p>양식을 내려받아 작성한 뒤 업로드하세요. 배정 시작일과 종료일은 모든 행에 동일하게 적용됩니다.</p></div><a className="secondary-button" href="/api/students/template">양식 다운로드</a></div><div className="form-grid"><label className="span-two">학생등록 엑셀 파일<input type="file" accept=".xlsx" onChange={(event) => { setImportFile(event.target.files?.[0] ?? null); setImportMessage(""); setImportSucceeded(false); }} />{importFile && <small className="selected-file">선택한 파일: {importFile.name}</small>}</label><label>배정 시작일<input type="date" value={importDates.startDate} onChange={(event) => setImportDates((current) => ({ ...current, startDate: event.target.value }))} /></label><label>배정 종료일<input type="date" value={importDates.endDate} onChange={(event) => setImportDates((current) => ({ ...current, endDate: event.target.value }))} /></label></div>{importMessage && <p className={`import-message ${importSucceeded ? "success" : ""}`} role="status">{importMessage}</p>}<div className="form-footer"><button disabled={importBusy}>{importBusy ? "학생 등록 중…" : "학생 일괄 등록"}</button></div></form>}
-            {settingsSection === "students" && <section className="main-panel student-directory"><div className="panel-heading"><div><h2>학생·호차별 배정 현황</h2><p>학생을 검색하거나, 학생 카드를 다른 호차로 끌어 옮길 수 있습니다.</p></div><button type="button" className="danger-button" onClick={() => { if (window.confirm("학생 명단과 모든 차량 배정을 삭제할까요? 운행 기록은 보존됩니다.")) adminAction({ action: "deleteAllStudents" }, "전체 학생 명단과 차량 배정을 삭제했습니다."); }}>전체 학생 삭제</button></div><div className="student-search"><label>학생 이름 검색<input value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="예: 김시완" /></label>{studentSearch.trim() && <div className="student-search-results">{(schoolData?.assignments ?? []).flatMap((assignment) => { const student = schoolData?.students.find((item) => item.id === assignment.student_id); const bus = liveBuses.find((item) => item.id === assignment.bus_id); return student && bus && student.name.includes(studentSearch.trim()) ? [<div key={assignment.id}><strong>{student.name} · {student.grade}학년 {student.class_name}</strong><span>{bus.label} 배정</span></div>] : []; })}</div>}</div><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "updateStudent", ...studentEditForm }, "학생 정보를 수정했습니다."); }}><label>이름<input value={studentEditForm.name} onChange={(event) => setStudentEditForm((current) => ({ ...current, name: event.target.value }))} /></label><label>학년<select value={studentEditForm.grade} onChange={(event) => setStudentEditForm((current) => ({ ...current, grade: Number(event.target.value) }))}>{[1,2,3,4,5,6].map((grade) => <option key={grade} value={grade}>{grade}학년</option>)}</select></label><label>반<input value={studentEditForm.className} onChange={(event) => setStudentEditForm((current) => ({ ...current, className: event.target.value }))} /></label><button className="student-save-button">학생 정보 저장</button></form><div className="bus-student-overview">{liveBuses.map((bus) => { const assignments = (schoolData?.assignments ?? []).filter((assignment) => assignment.bus_id === bus.id); return <div className="bus-student-card" key={bus.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const assignmentId = Number(event.dataTransfer.getData("assignmentId")); if (assignmentId) adminAction({ action: "moveAssignment", assignmentId, busId: bus.id }, `${bus.label}로 학생 배정을 옮겼습니다.`); }}><div className="bus-student-card-header"><strong>{bus.label} · {assignments.length}명</strong><button type="button" className="danger-button" onClick={() => { if (assignments.length && window.confirm(`${bus.label} 학생 ${assignments.length}명의 배정을 모두 삭제할까요?`)) adminAction({ action: "deleteBusAssignments", busId: bus.id }, `${bus.label}의 학생 배정을 모두 삭제했습니다.`); }}>호차 배정 전체 삭제</button></div>{assignments.map((assignment) => { const student = schoolData?.students.find((item) => item.id === assignment.student_id); return student ? <div className="assigned-student-name" draggable key={assignment.id} onDragStart={(event) => event.dataTransfer.setData("assignmentId", String(assignment.id))}><span><b>{student.name}</b> · {student.grade}학년 {student.class_name} · {bus.label}</span><button type="button" onClick={() => { if (window.confirm(`${student.name} 학생의 ${bus.label} 배정을 삭제할까요?`)) adminAction({ action: "deleteAssignment", assignmentId: assignment.id }, `${student.name} 학생의 차량 배정을 삭제했습니다.`); }}>삭제</button></div> : null; })}</div>; })}</div></section>}
+            {settingsSection === "students" && <section className="main-panel student-directory"><div className="panel-heading"><div><h2>학생·호차별 배정 현황</h2><p>학생을 검색해 수정하거나, 학생 카드를 다른 호차로 끌어 옮길 수 있습니다.</p></div><button type="button" className="danger-button" onClick={() => { if (window.confirm("학생 명단과 모든 차량 배정을 삭제할까요? 운행 기록은 보존됩니다.")) adminAction({ action: "deleteAllStudents" }, "전체 학생 명단과 차량 배정을 삭제했습니다."); }}>전체 학생 삭제</button></div><div className="student-search"><label>학생 이름 검색<input value={studentSearch} onChange={(event) => setStudentSearch(event.target.value)} placeholder="예: 김시완" /></label>{studentSearch.trim() && <div className="student-search-results">{(schoolData?.assignments ?? []).flatMap((assignment) => { const student = schoolData?.students.find((item) => item.id === assignment.student_id); const bus = liveBuses.find((item) => item.id === assignment.bus_id); return student && bus && student.name.includes(studentSearch.trim()) ? [<div key={assignment.id}><strong>{student.name} · {student.grade}학년 {student.class_name}</strong><span>{bus.label} · {assignment.stop_name ?? "승차장소 미등록"}</span><button type="button" onClick={() => setStudentEditForm({ id: student.id, name: student.name, grade: student.grade, className: student.class_name, assignmentId: assignment.id, stopName: assignment.stop_name ?? "" })}>수정</button></div>] : []; })}</div>}</div>{studentEditForm.id > 0 && <form className="form-grid student-edit-form" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "updateStudent", ...studentEditForm }, "학생 정보와 승차장소를 수정했습니다."); }}><label>이름<input value={studentEditForm.name} onChange={(event) => setStudentEditForm((current) => ({ ...current, name: event.target.value }))} /></label><label>학년<select value={studentEditForm.grade} onChange={(event) => setStudentEditForm((current) => ({ ...current, grade: Number(event.target.value) }))}>{[1,2,3,4,5,6].map((grade) => <option key={grade} value={grade}>{grade}학년</option>)}</select></label><label>반<input value={studentEditForm.className} onChange={(event) => setStudentEditForm((current) => ({ ...current, className: event.target.value }))} /></label><label>승차장소<input value={studentEditForm.stopName} onChange={(event) => setStudentEditForm((current) => ({ ...current, stopName: event.target.value }))} placeholder="예: GS편의점" /></label><button className="student-save-button" disabled={dataBusy}>{dataBusy ? "수정 중…" : "학생 정보 수정"}</button></form>}<div className="bus-student-overview">{liveBuses.map((bus) => { const assignments = (schoolData?.assignments ?? []).filter((assignment) => assignment.bus_id === bus.id); return <div className="bus-student-card" key={bus.id} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { const assignmentId = Number(event.dataTransfer.getData("assignmentId")); if (assignmentId) adminAction({ action: "moveAssignment", assignmentId, busId: bus.id }, `${bus.label}로 학생 배정을 옮겼습니다.`); }}><div className="bus-student-card-header"><strong>{bus.label} · {assignments.length}명</strong><button type="button" className="danger-button" onClick={() => { if (assignments.length && window.confirm(`${bus.label} 학생 ${assignments.length}명의 배정을 모두 삭제할까요?`)) adminAction({ action: "deleteBusAssignments", busId: bus.id }, `${bus.label}의 학생 배정을 모두 삭제했습니다.`); }}>호차 배정 전체 삭제</button></div>{assignments.map((assignment) => { const student = schoolData?.students.find((item) => item.id === assignment.student_id); return student ? <div className="assigned-student-name" draggable key={assignment.id} onDragStart={(event) => event.dataTransfer.setData("assignmentId", String(assignment.id))}><span><b>{student.name}</b> · {student.grade}학년 {student.class_name} · {bus.label}</span><button type="button" onClick={() => { if (window.confirm(`${student.name} 학생의 ${bus.label} 배정을 삭제할까요?`)) adminAction({ action: "deleteAssignment", assignmentId: assignment.id }, `${student.name} 학생의 차량 배정을 삭제했습니다.`); }}>삭제</button></div> : null; })}</div>; })}</div></section>}
             {settingsSection === "calendar" && <form className="main-panel semester-settings" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "saveSettings", ...settingsForm }, "학년도와 학기 기간을 저장했습니다."); }}><div className="panel-heading"><div><h2>학년도와 학기 기간</h2><p>학생 배정과 운행 관리에 사용할 기간을 직접 설정하세요.</p></div></div><div className="form-grid"><label>학년도<input type="number" value={settingsForm.schoolYear} onChange={(event) => setSettingsForm((current) => ({ ...current, schoolYear: Number(event.target.value) }))} /></label><label>전체 운행 시작일<input type="date" value={settingsForm.startDate} onChange={(event) => setSettingsForm((current) => ({ ...current, startDate: event.target.value }))} /></label><label>전체 운행 종료일<input type="date" value={settingsForm.endDate} onChange={(event) => setSettingsForm((current) => ({ ...current, endDate: event.target.value }))} /></label><label>1학기 시작일<input type="date" value={settingsForm.semester1StartDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester1StartDate: event.target.value }))} /></label><label>1학기 종료일<input type="date" value={settingsForm.semester1EndDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester1EndDate: event.target.value }))} /></label><label>2학기 시작일<input type="date" value={settingsForm.semester2StartDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester2StartDate: event.target.value }))} /></label><label>2학기 종료일<input type="date" value={settingsForm.semester2EndDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester2EndDate: event.target.value }))} /></label></div><div className="form-footer"><button>학기 기간 저장</button></div></form>}
             {settingsSection === "codes" && <section className="main-panel staff-picker"><div className="panel-heading"><div><h2>등록 운전자·동승자 선택</h2><p>차량정보에 입력된 담당자를 선택하면 코드 발급 양식에 자동 입력됩니다. 같은 담당자를 여러 차량에 반복 선택할 수 있습니다.</p></div><select defaultValue="" onChange={(event) => { const [role, ...name] = event.target.value.split(":"); if (name.length) setAccountForm((current) => ({ ...current, role: role as "driver" | "attendant", displayName: name.join(":") })); }}><option value="">직접 입력 또는 담당자 선택</option>{operationPeople.map((person) => <option key={`${person.role}:${person.name}`} value={`${person.role}:${person.name}`}>{person.name} · {person.role === "driver" ? "운전자" : "동승자"}</option>)}</select></div></section>}
             <div className="settings-grid">
@@ -519,7 +539,6 @@ export default function Home() {
               <form className="summary-card settings-card" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "addGroup", name: groupForm.name }, "점검 세트를 추가했습니다."); }}><span>점검 세트 관리</span><label>세트 선택<select value={groupForm.groupId} onChange={(event) => { const groupId = Number(event.target.value); setGroupForm((current) => ({ ...current, groupId, busIds: schoolData?.groupBuses.filter((item) => item.group_id === groupId).map((item) => item.bus_id) ?? [] })); }}>{schoolData?.groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label><div className="bus-check-grid">{liveBuses.map((bus) => <label key={bus.id}><input type="checkbox" checked={groupForm.busIds.includes(bus.id)} onChange={(event) => setGroupForm((current) => ({ ...current, busIds: event.target.checked ? [...current.busIds, bus.id] : current.busIds.filter((id) => id !== bus.id) }))} />{bus.label}</label>)}</div><button type="button" className="primary-full" onClick={() => adminAction({ action: "saveGroupBuses", groupId: groupForm.groupId, busIds: groupForm.busIds }, "점검 세트 차량 구성을 저장했습니다.")}>차량 묶음 저장</button><label>새 세트 이름<input value={groupForm.name} onChange={(event) => setGroupForm((current) => ({ ...current, name: event.target.value }))} /></label><button className="secondary-button full">새 세트 추가</button><button type="button" className="danger-button" onClick={() => adminAction({ action: "deleteGroup", groupId: groupForm.groupId }, "점검 세트를 삭제했습니다.")}>선택 세트 삭제</button></form>
             </div>
             <div className="main-panel checklist-editor"><div className="panel-heading"><div><h2>점검 문구와 담당 역할</h2><p>원본 서식에 맞게 문구를 교정하고, 필요하면 운전자·동승자 담당 항목을 나눌 수 있습니다.</p></div><span className="eyebrow">{checklistItems.length}개 항목</span></div><div className="checklist-edit-list">{schoolData?.checklistItems.map((item) => { const draft = checklistDrafts[item.id] ?? { content: item.content, responsibleRole: item.responsible_role }; return <div className="checklist-edit-row" key={item.id}><span>{item.code}</span><strong>{item.category}</strong><input value={draft.content} onChange={(event) => setChecklistDrafts((current) => ({ ...current, [item.id]: { ...draft, content: event.target.value } }))} /><select value={draft.responsibleRole} onChange={(event) => setChecklistDrafts((current) => ({ ...current, [item.id]: { ...draft, responsibleRole: event.target.value as typeof draft.responsibleRole } }))}><option value="all">공동 작성</option><option value="driver">운전자</option><option value="attendant">동승자</option></select><button onClick={() => adminAction({ action: "updateChecklistItem", id: item.id, content: draft.content, responsibleRole: draft.responsibleRole }, "점검 항목을 수정했습니다.")}>저장</button></div>; })}</div></div>
-            {dataMessage && <div className="settings-message">{dataMessage}</div>}
           </section>
         )}
       </section>

@@ -4,7 +4,7 @@ import { createPinHash, requireUser } from "../../auth";
 type DataAction =
   | { action: "saveBus"; id: number; plateNumber?: string; driverName?: string; attendantName?: string }
   | { action: "addStudent"; name: string; grade: number; className: string }
-  | { action: "updateStudent"; id: number; name: string; grade: number; className: string }
+  | { action: "updateStudent"; id: number; name: string; grade: number; className: string; assignmentId?: number; stopName?: string }
   | { action: "addStudentAndAssign"; name: string; grade: number; className: string; busId: number; stopName?: string; startDate: string; endDate: string }
   | { action: "saveAssignment"; studentId: number; busId: number; stopName?: string; startDate: string; endDate: string }
   | { action: "reassignStudent"; studentId: number; busId: number; stopName?: string; startDate: string; endDate: string }
@@ -118,6 +118,10 @@ export async function POST(request: Request) {
     if (!body.id || !body.name?.trim() || !Number.isInteger(body.grade) || !body.className?.trim()) return jsonError("학생 이름, 학년, 반을 모두 입력하세요.");
     const { error } = await db.from("students").update({ name: body.name.trim(), grade: body.grade, class_name: body.className.trim() }).eq("id", body.id);
     if (error) assertDatabase(null, error);
+    if (body.assignmentId) {
+      const { error: assignmentError } = await db.from("assignments").update({ stop_name: body.stopName?.trim() || null }).eq("id", body.assignmentId).eq("student_id", body.id);
+      if (assignmentError) assertDatabase(null, assignmentError, "승차장소를 수정하지 못했습니다.");
+    }
   } else if (body.action === "addStudentAndAssign") {
     if (!body.name?.trim() || !Number.isInteger(body.grade) || !body.className?.trim() || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("학생 정보와 차량 배정 기간을 확인하세요.");
     const { data: inserted, error: studentError } = await db.from("students")

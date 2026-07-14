@@ -29,6 +29,10 @@ nav { display:grid; gap:8px; padding-top:24px; }
 .sidebar-note small { color:#d0dfda; font-size:11px; line-height:1.5; }
 .workspace { min-width:0; padding:34px 42px 54px; }
 .topbar { display:flex; justify-content:space-between; align-items:flex-end; max-width:1320px; margin:0 auto 26px; }
+.action-message { display:flex; align-items:center; gap:7px; max-width:1320px; margin:-14px auto 18px; padding:10px 13px; border:1px solid #cfe0d7; border-radius:9px; background:#edf7f1; color:#245940; font-size:12px; font-weight:800; }
+.action-message.working { background:#eef5ff; border-color:#c9dbee; color:#255a88; }
+.loading-dot { width:8px; height:8px; border-radius:50%; background:currentColor; animation:status-pulse .8s infinite alternate; }
+@keyframes status-pulse { from { opacity:.25; transform:scale(.75); } to { opacity:1; transform:scale(1); } }
 .eyebrow { color:#2e7a63; font-size:11px; font-weight:850; letter-spacing:.12em; text-transform:uppercase; }
 h1 { margin:6px 0 0; font-size:30px; letter-spacing:-1.3px; }
 .today { min-width:118px; text-align:right; }
@@ -213,6 +217,8 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
 .student-search-results { display:grid; gap:6px; margin-top:9px; }
 .student-search-results div { display:flex; justify-content:space-between; gap:10px; max-width:500px; padding:8px 10px; border-radius:7px; background:#f4f7f5; font-size:11px; }
 .student-search-results span { color:#516158; }
+.student-search-results button { padding:4px 8px; border:0; border-radius:6px; background:#315f4f; color:#fff; font-size:10px; font-weight:800; }
+.student-edit-form { margin-bottom:16px; padding-top:4px; }
 .absence-total { display:block; margin:14px 0 6px; color:#174f3f; font-size:13px; }
 .settings-page.buses > .settings-grid.settings-lower,.settings-page.buses > .checklist-editor { display:none; }
 .settings-page.students > .settings-grid:not(.student-settings),.settings-page.students > .settings-grid.settings-lower:not(.student-settings),.settings-page.students > .checklist-editor { display:none; }
