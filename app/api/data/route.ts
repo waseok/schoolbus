@@ -25,20 +25,31 @@ export async function GET(request: Request) {
   const user = await requireUser(request);
   if (!user) return jsonError("로그인이 필요합니다.", 401);
   const db = await ensureDatabase();
+  const scope = new URL(request.url).searchParams.get("scope");
+
+  if (scope === "management") {
+    if (user.role !== "admin" && !user.demo) return Response.json({ groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [] });
+    const results = await Promise.all([
+      db.from("inspection_groups").select("*").eq("active", 1).order("id"),
+      db.from("inspection_group_buses").select("*").order("group_id").order("bus_id"),
+      db.from("app_users").select("id, username, display_name, role, active").eq("active", 1).order("role").order("display_name").order("username"),
+      db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }),
+      db.from("checklist_items").select("id, code, category, content, responsible_role, sort_order").eq("active", 1).order("sort_order"),
+    ]);
+    for (const result of results) if (result.error) assertDatabase(null, result.error);
+    const [groups, groupBuses, users, userBuses, checklistItems] = results.map((result) => result.data);
+    return Response.json({ groups, groupBuses, users, userBuses, checklistItems });
+  }
+
   const results = await Promise.all([
     db.from("school_settings").select("*").eq("id", 1).maybeSingle(),
     db.from("buses").select("*").eq("active", 1).order("bus_number"),
     db.from("students").select("*").eq("active", 1).order("grade").order("class_name").order("name"),
     db.from("assignments").select("*").order("start_date", { ascending: false }),
     db.from("calendar_exclusions").select("*").order("date"),
-    db.from("inspection_groups").select("*").eq("active", 1).order("id"),
-    db.from("inspection_group_buses").select("*").order("group_id").order("bus_id"),
-    db.from("app_users").select("id, username, display_name, role, active").eq("active", 1).order("role").order("display_name").order("username"),
-    db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }),
-    db.from("checklist_items").select("id, code, category, content, responsible_role, sort_order").eq("active", 1).order("sort_order"),
   ]);
   for (const result of results) if (result.error) assertDatabase(null, result.error);
-  const [settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems] = results.map((result) => result.data);
+  const [settings, buses, students, assignments, exclusions] = results.map((result) => result.data);
 
   if (user.demo) {
     const samplePeople = [
@@ -66,19 +77,21 @@ export async function GET(request: Request) {
       students: samplePeople,
       assignments: sampleAssignments,
       exclusions,
-      groups,
-      groupBuses,
+      groups: [],
+      groupBuses: [],
       users: [{ id: 0, username: "demo", display_name: "체험 관리자", role: "admin", active: 1 }],
       userBuses: [],
-      checklistItems,
+      checklistItems: [],
       demo: true,
     });
   }
 
   if (user.role === "admin") {
-    return Response.json({ settings, buses, students, assignments, exclusions, groups, groupBuses, users, userBuses, checklistItems });
+    return Response.json({ settings, buses, students, assignments, exclusions, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [] });
   }
-  const allowed = Array.from(new Set((userBuses as Array<{ user_id: number; bus_id: number }>).filter((item) => item.user_id === user.id).map((item) => item.bus_id)));
+  const { data: userBuses, error: userBusesError } = await db.from("user_bus_assignments").select("user_id, bus_id").eq("user_id", user.id);
+  if (userBusesError) assertDatabase(null, userBusesError);
+  const allowed = Array.from(new Set((userBuses as Array<{ user_id: number; bus_id: number }>).map((item) => item.bus_id)));
   const visibleAssignments = (assignments as Array<{ id: number; student_id: number; bus_id: number }>).filter((item) => allowed.includes(item.bus_id));
   const visibleStudentIds = visibleAssignments.map((item) => item.student_id);
   return Response.json({
@@ -87,11 +100,11 @@ export async function GET(request: Request) {
     students: (students as Array<{ id: number }>).filter((item) => visibleStudentIds.includes(item.id)),
     assignments: visibleAssignments,
     exclusions,
-    groups: (groups as Array<{ id: number }>).filter((group) => (groupBuses as Array<{ group_id: number; bus_id: number }>).some((item) => item.group_id === group.id && allowed.includes(item.bus_id))),
-    groupBuses: (groupBuses as Array<{ bus_id: number }>).filter((item) => allowed.includes(item.bus_id)),
+    groups: [],
+    groupBuses: [],
     users: [],
     userBuses: [],
-    checklistItems,
+    checklistItems: [],
   });
 }
 

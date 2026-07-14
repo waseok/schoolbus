@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { maskName, maskPlate } from "./masking";
 import { defaultChecklistItems } from "../lib/checklist";
 
@@ -101,6 +101,8 @@ export default function Home() {
   const [importSucceeded, setImportSucceeded] = useState(false);
   const [checklistDrafts, setChecklistDrafts] = useState<Record<number, { content: string; responsibleRole: "all" | "driver" | "attendant" }>>({});
   const [holidays, setHolidays] = useState<Array<{ date: string; names: string[] }>>([]);
+  const holidayCache = useRef<Record<string, Array<{ date: string; names: string[] }>>>({});
+  const [managementLoaded, setManagementLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [runStatus, setRunStatus] = useState<"operated" | "not_operated">("operated");
   const [runReason, setRunReason] = useState("");
@@ -143,9 +145,17 @@ export default function Home() {
   useEffect(() => {
     if (view !== "log") return;
     const year = selectedDate.slice(0, 4);
+    const cached = holidayCache.current[year];
+    if (cached) {
+      setHolidays(cached);
+      return;
+    }
     fetch(`/api/holidays?year=${year}`)
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((data: { holidays: Array<{ date: string; names: string[] }> }) => setHolidays(data.holidays))
+      .then((data: { holidays: Array<{ date: string; names: string[] }> }) => {
+        holidayCache.current[year] = data.holidays;
+        setHolidays(data.holidays);
+      })
       .catch(() => setHolidays([]));
   }, [selectedDate, view]);
 
@@ -157,8 +167,16 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (authUser) void loadSchoolData();
+    if (authUser) {
+      setManagementLoaded(false);
+      void loadSchoolData();
+    }
   }, [authUser]);
+
+  useEffect(() => {
+    if (managementLoaded || !authUser || authUser.role !== "admin" || (view !== "settings" && view !== "checklist")) return;
+    void loadManagementData();
+  }, [authUser, managementLoaded, view]);
 
   useEffect(() => {
     if (view !== "log" || !schoolData || !authUser) return;
@@ -252,6 +270,46 @@ export default function Home() {
     if (mapped.length && !mapped.some((bus) => bus.id === busId)) setBusId(mapped[0].id);
   }
 
+  async function loadManagementData() {
+    const response = await fetch("/api/data?scope=management");
+    if (!response.ok) { setDataMessage("관리 화면 데이터를 불러오지 못했습니다."); return; }
+    const data = await response.json() as Pick<SchoolData, "groups" | "groupBuses" | "users" | "userBuses" | "checklistItems">;
+    setSchoolData((current) => current ? { ...current, ...data } : current);
+    setManagementLoaded(true);
+  }
+
+  function applyLocalDataChange(body: Record<string, unknown>) {
+    const action = String(body.action ?? "");
+    if (!["saveBus", "updateStudent", "moveAssignment", "deleteAssignment", "deleteBusAssignments", "deleteAllStudents"].includes(action)) return false;
+
+    setSchoolData((current) => {
+      if (!current) return current;
+      let next = current;
+      if (action === "saveBus") {
+        next = { ...current, buses: current.buses.map((bus) => bus.id === Number(body.id) ? { ...bus, plate_number: String(body.plateNumber ?? "").trim() || null, driver_name: String(body.driverName ?? "").trim() || null, attendant_name: String(body.attendantName ?? "").trim() || null } : bus) };
+      } else if (action === "updateStudent") {
+        next = {
+          ...current,
+          students: current.students.map((student) => student.id === Number(body.id) ? { ...student, name: String(body.name), grade: Number(body.grade), class_name: String(body.className) } : student),
+          assignments: current.assignments.map((assignment) => assignment.id === Number(body.assignmentId) ? { ...assignment, stop_name: String(body.stopName ?? "").trim() || null } : assignment),
+        };
+      } else if (action === "moveAssignment") {
+        next = { ...current, assignments: current.assignments.map((assignment) => assignment.id === Number(body.assignmentId) ? { ...assignment, bus_id: Number(body.busId) } : assignment) };
+      } else if (action === "deleteAssignment") {
+        next = { ...current, assignments: current.assignments.filter((assignment) => assignment.id !== Number(body.assignmentId)) };
+      } else if (action === "deleteBusAssignments") {
+        next = { ...current, assignments: current.assignments.filter((assignment) => assignment.bus_id !== Number(body.busId)) };
+      } else if (action === "deleteAllStudents") {
+        next = { ...current, students: [], assignments: [] };
+      }
+      const counts = new Map<number, number>();
+      next.assignments.forEach((assignment) => counts.set(assignment.bus_id, (counts.get(assignment.bus_id) ?? 0) + 1));
+      setLiveBuses(next.buses.map((bus) => ({ id: bus.id, label: `${bus.bus_number}호차`, plate: maskPlate(bus.plate_number), driver: maskName(bus.driver_name), students: counts.get(bus.id) ?? 0 })));
+      return next;
+    });
+    return true;
+  }
+
   async function submitAuth(event: React.FormEvent) {
     event.preventDefault();
     setAuthBusy(true);
@@ -335,7 +393,11 @@ export default function Home() {
       const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json().catch(() => ({})) as { error?: string };
       setDataMessage(response.ok ? successMessage : result.error ?? `${progress}하지 못했습니다.`);
-      if (response.ok) await loadSchoolData();
+      if (response.ok) {
+        const updatedLocally = applyLocalDataChange(body);
+        if (!updatedLocally) await loadSchoolData();
+        if (managementLoaded && ["saveGroupBuses", "addGroup", "deleteGroup", "updateChecklistItem"].includes(action)) await loadManagementData();
+      }
       return response.ok;
     } catch {
       setDataMessage("서버와 통신하지 못했습니다. 잠시 후 다시 시도하세요.");
@@ -351,7 +413,7 @@ export default function Home() {
     if (!response.ok) { setDataMessage(result.error ?? "운행 코드를 발급하지 못했습니다."); return; }
     setDataMessage(`운행 코드가 발급되었습니다: ${result.code} — 담당자에게 전달하세요.`);
     setAccountForm((current) => ({ ...current, displayName: "" }));
-    await loadSchoolData();
+    if (managementLoaded) await loadManagementData();
   }
 
   async function importStudents(event: React.FormEvent) {
