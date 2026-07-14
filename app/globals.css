@@ -196,9 +196,11 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
 .student-directory { overflow:hidden; }
 .student-directory .panel-heading select { min-width:190px; }
 .bus-student-overview { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; padding:0 24px 24px; }
-.bus-student-overview div { display:grid; gap:5px; padding:12px; border:1px solid #e1e7e3; border-radius:9px; background:#fbfdfb; }
+.bus-student-overview > div { display:grid; gap:5px; padding:12px; border:1px solid #e1e7e3; border-radius:9px; background:#fbfdfb; }
 .bus-student-overview strong { color:#174f3f; font-size:12px; }
 .bus-student-overview span { color:#58675f; font-size:11px; }
+.assigned-student-name { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.assigned-student-name button { padding:4px 7px; border:1px solid #e8c5bd; border-radius:6px; background:#fff6f3; color:#a44d2c; font-size:10px; font-weight:800; }
 .absence-total { display:block; margin:14px 0 6px; color:#174f3f; font-size:13px; }
 .settings-page.buses > .settings-grid.settings-lower,.settings-page.buses > .checklist-editor { display:none; }
 .settings-page.students > .settings-grid:not(.student-settings),.settings-page.students > .settings-grid.settings-lower:not(.student-settings),.settings-page.students > .checklist-editor { display:none; }

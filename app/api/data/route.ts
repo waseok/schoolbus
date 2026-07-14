@@ -8,6 +8,7 @@ type DataAction =
   | { action: "addStudentAndAssign"; name: string; grade: number; className: string; busId: number; stopName?: string; startDate: string; endDate: string }
   | { action: "saveAssignment"; studentId: number; busId: number; stopName?: string; startDate: string; endDate: string }
   | { action: "reassignStudent"; studentId: number; busId: number; stopName?: string; startDate: string; endDate: string }
+  | { action: "deleteAssignment"; assignmentId: number }
   | { action: "addExclusion"; date: string; kind: "discretionary_holiday" | "emergency" | "other"; note?: string }
   | { action: "deleteExclusion"; id: number }
   | { action: "saveGroupBuses"; groupId: number; busIds: number[] }
@@ -148,6 +149,11 @@ export async function POST(request: Request) {
     if (futureOverlap) return jsonError("새 배정 기간과 겹치는 다른 차량 배정이 있습니다.");
     const { error } = await db.from("assignments").insert({ student_id: body.studentId, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
     if (error) assertDatabase(null, error);
+  } else if (body.action === "deleteAssignment") {
+    if (!Number.isInteger(body.assignmentId) || body.assignmentId <= 0) return jsonError("삭제할 학생 배정 정보가 올바르지 않습니다.");
+    const { data, error } = await db.from("assignments").delete().eq("id", body.assignmentId).select("id").maybeSingle();
+    if (error) assertDatabase(null, error, "학생 차량 배정을 삭제하지 못했습니다.");
+    if (!data) return jsonError("이미 삭제되었거나 찾을 수 없는 학생 배정입니다.", 404);
   } else if (body.action === "addExclusion") {
     if (!body.date) return jsonError("제외 날짜를 입력하세요.");
     const { error } = await db.from("calendar_exclusions").upsert({ date: body.date, kind: body.kind, note: body.note?.trim() || null }, { onConflict: "date" });
