@@ -185,7 +185,8 @@ select:focus,input:focus { border-color:#37836b; box-shadow:0 0 0 3px rgba(55,13
 .semester-settings,.import-panel,.assigned-students { overflow:hidden; }
 .staff-picker { overflow:hidden; }
 .staff-picker .panel-heading select { min-width:230px; }
-.import-panel input[type="file"] { height:auto; padding:9px; }
+.import-panel label.span-two { padding:14px; border:1px dashed #7da895; border-radius:10px; background:#edf7f1; }
+.import-panel input[type="file"] { display:block; height:auto; margin-top:9px; padding:10px; border:1px solid #b9d1c2; border-radius:8px; background:#fff; }
 .selected-file { display:block; margin-top:7px; color:#315f4f; font-size:11px; font-weight:700; }
 .import-message { margin:0 24px 16px; padding:11px 13px; border-radius:9px; background:#fff1f1; color:#a12c2c; font-size:12px; font-weight:700; }
 .import-message.success { background:#e4f3ea; color:#236446; }
