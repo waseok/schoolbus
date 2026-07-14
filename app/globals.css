@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
-@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundL.ttf") format("truetype"); font-weight:400; font-style:normal; font-display:swap; }
-@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundB.ttf") format("truetype"); font-weight:700; font-style:normal; font-display:swap; }
-@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundEB.ttf") format("truetype"); font-weight:800 900; font-style:normal; font-display:swap; }
+@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundL.woff2") format("woff2"); font-weight:400; font-style:normal; font-display:swap; }
+@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundB.woff2") format("woff2"); font-weight:700; font-style:normal; font-display:swap; }
+@font-face { font-family:"NanumSquareRound"; src:url("/fonts/NanumSquareRoundEB.woff2") format("woff2"); font-weight:800 900; font-style:normal; font-display:swap; }
 
 :root { --ink:#17211d; --muted:#68736d; --line:#dfe5e1; --cream:#f4f3ed; --green:#174f3f; --mint:#dcece5; --orange:#e7773b; }
 * { box-sizing: border-box; }
@@ -75,6 +75,7 @@ h1 { margin:6px 0 0; font-size:30px; letter-spacing:-1.3px; }
 .main-panel,.summary-card { border:1px solid var(--line); border-radius:18px; background:#fff; box-shadow:0 10px 35px rgba(24,54,44,.055); }
 .main-panel { overflow:hidden; }
 .main-panel.wide { max-width:1320px; margin:auto; }
+.view-loading { padding:42px 24px; color:var(--muted); text-align:center; }
 .control-row { display:grid; grid-template-columns:150px minmax(230px,1fr) auto auto; gap:15px; align-items:end; padding:20px 24px; border-bottom:1px solid var(--line); background:#fbfcfa; }
 .control-row label,.settings-card label { display:grid; gap:7px; color:var(--muted); font-size:11px; font-weight:750; }
 select,input[type="date"] { height:40px; padding:0 12px; border:1px solid #cfd8d2; border-radius:9px; background:white; color:var(--ink); outline:none; }

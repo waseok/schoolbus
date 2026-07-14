@@ -1,8 +1,12 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import { maskName, maskPlate } from "./masking";
 import { defaultChecklistItems } from "../lib/checklist";
+
+const StatisticsView = dynamic(() => import("./components/statistics-view"), { loading: () => <div className="main-panel wide view-loading">통계를 불러오는 중입니다…</div> });
+const ChecklistView = dynamic(() => import("./components/checklist-view"), { loading: () => <div className="main-panel wide view-loading">점검표를 불러오는 중입니다…</div> });
 
 type View = "log" | "stats" | "checklist" | "settings";
 type SettingsSection = "buses" | "students" | "calendar" | "codes" | "checklist";
@@ -16,6 +20,9 @@ type ApiChecklistItem = { id: number; code: string; category: string; content: s
 type ApiUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant"; active: number };
 type ApiUserBus = { id: number; user_id: number; bus_id: number; start_date: string; end_date: string };
 type SchoolData = { settings: Record<string, unknown> | null; buses: ApiBus[]; students: ApiStudent[]; assignments: ApiAssignment[]; exclusions: Array<{ id: number; date: string; kind: string; note: string | null }>; groups: ApiGroup[]; groupBuses: Array<{ group_id: number; bus_id: number }>; users: ApiUser[]; userBuses: ApiUserBus[]; checklistItems: ApiChecklistItem[] };
+type RunPayload = { run: { status?: "operated" | "not_operated"; reason?: string | null } | null; boarding: Array<{ student_id: number; boarded: number; note: string | null }> };
+type BootstrapRun = { bus_id: number; date: string; status?: "operated" | "not_operated"; reason?: string | null; boarding_records: RunPayload["boarding"] };
+type BootstrapData = SchoolData & { initialRuns?: BootstrapRun[]; initialDate?: string };
 type StatisticsData = { month: string; holidays: Array<{ date: string; names: string[] }>; exclusions: Array<{ date: string; kind: string; note: string | null }>; nonOperatingRuns: Array<{ bus_id: number; date: string; reason: string | null }>; buses: Array<{ id: number; bus_number: number }> };
 type StudentAbsenceData = { records: Array<{ name: string; grade: number; className: string; date: string; busNumber: number; note: string }> };
 
@@ -104,6 +111,7 @@ export default function Home() {
   const [checklistDrafts, setChecklistDrafts] = useState<Record<number, { content: string; responsibleRole: "all" | "driver" | "attendant" }>>({});
   const [holidays, setHolidays] = useState<Array<{ date: string; names: string[] }>>([]);
   const holidayCache = useRef<Record<string, Array<{ date: string; names: string[] }>>>({});
+  const runCache = useRef(new Map<string, RunPayload>());
   const [managementLoaded, setManagementLoaded] = useState(false);
   const [saved, setSaved] = useState(false);
   const [runStatus, setRunStatus] = useState<"operated" | "not_operated">("operated");
@@ -161,22 +169,16 @@ export default function Home() {
       .catch(() => setHolidays([]));
   }, [selectedDate, view]);
 
+  // Bootstrap runs once on mount; subsequent calls happen explicitly after login.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
-    fetch("/api/auth/me")
-      .then(async (response) => ({ response, data: await response.json() }))
-      .then(({ data }: { data: { user: SignedInUser | null; needsSetup: boolean } }) => { setAuthUser(data.user); setNeedsSetup(data.needsSetup); })
-      .catch(() => { setAuthUser(null); setAuthError("로그인 상태를 확인하지 못했습니다."); });
+    void loadBootstrap();
   }, []);
 
   useEffect(() => {
-    if (authUser) {
-      setManagementLoaded(false);
-      void loadSchoolData();
-    }
-  }, [authUser]);
-
-  useEffect(() => {
-    if (managementLoaded || !authUser || authUser.role !== "admin" || (view !== "settings" && view !== "checklist")) return;
+    if (managementLoaded || !authUser) return;
+    const needsManagementData = view === "checklist" || (authUser.role === "admin" && (view === "settings" || view === "stats"));
+    if (!needsManagementData) return;
     void loadManagementData();
   }, [authUser, managementLoaded, view]);
 
@@ -187,10 +189,22 @@ export default function Home() {
       const student = schoolData.students.find((item) => item.id === assignment.student_id);
       return student ? [{ id: student.id, name: student.name, detail: `${student.grade}학년 ${student.class_name} · ${assignment.stop_name || "정류장 미등록"}`, boarded: true, note: "" }] : [];
     });
+    const cacheKey = `${busId}:${selectedDate}`;
+    const cached = runCache.current.get(cacheKey);
+    if (cached) {
+      setRunStatus(cached.run?.status ?? "operated");
+      setRunReason(cached.run?.reason ?? "");
+      setStudents(rows.map((student) => {
+        const savedRecord = cached.boarding.find((record) => record.student_id === student.id);
+        return savedRecord ? { ...student, boarded: Boolean(savedRecord.boarded), note: savedRecord.note ?? "" } : student;
+      }));
+      return;
+    }
     setStudents(rows);
     fetch(`/api/runs?busId=${busId}&date=${selectedDate}`)
       .then((response) => response.ok ? response.json() : Promise.reject())
-      .then((payload: { run: { status?: "operated" | "not_operated"; reason?: string | null } | null; boarding: Array<{ student_id: number; boarded: number; note: string | null }> }) => {
+      .then((payload: RunPayload) => {
+        runCache.current.set(cacheKey, payload);
         setRunStatus(payload.run?.status ?? "operated");
         setRunReason(payload.run?.reason ?? "");
         setStudents((current) => current.map((student) => {
@@ -267,10 +281,7 @@ export default function Home() {
       }).catch(() => setAnswers({}));
   }, [view, inspectionMonth, inspectionGroupId, authUser]);
 
-  async function loadSchoolData() {
-    const response = await fetch("/api/data");
-    if (!response.ok) { setDataMessage("학교 데이터를 불러오지 못했습니다."); return; }
-    const data = await response.json() as SchoolData;
+  function applyLoadedSchoolData(data: SchoolData) {
     setSchoolData(data);
     const counts = new Map<number, number>();
     data.assignments.forEach((assignment) => counts.set(assignment.bus_id, (counts.get(assignment.bus_id) ?? 0) + 1));
@@ -279,10 +290,38 @@ export default function Home() {
     if (mapped.length && !mapped.some((bus) => bus.id === busId)) setBusId(mapped[0].id);
   }
 
+  async function loadBootstrap() {
+    try {
+      const date = localDate();
+      const response = await fetch(`/api/data?bootstrap=1&date=${date}`);
+      const payload = await response.json() as { user: SignedInUser | null; needsSetup: boolean; data: BootstrapData | null; error?: string };
+      setAuthUser(payload.user);
+      setNeedsSetup(payload.needsSetup);
+      setManagementLoaded(false);
+      if (payload.data) {
+        runCache.current.clear();
+        payload.data.initialRuns?.forEach((run) => runCache.current.set(`${run.bus_id}:${run.date}`, { run: { status: run.status, reason: run.reason }, boarding: run.boarding_records ?? [] }));
+        applyLoadedSchoolData(payload.data);
+      } else {
+        setSchoolData(null);
+        setStudents(emptyStudents);
+      }
+    } catch {
+      setAuthUser(null);
+      setAuthError("로그인 상태와 학교 데이터를 불러오지 못했습니다.");
+    }
+  }
+
+  async function loadSchoolData() {
+    const response = await fetch("/api/data");
+    if (!response.ok) { setDataMessage("학교 데이터를 불러오지 못했습니다."); return; }
+    applyLoadedSchoolData(await response.json() as SchoolData);
+  }
+
   async function loadManagementData() {
     const response = await fetch("/api/data?scope=management");
     if (!response.ok) { setDataMessage("관리 화면 데이터를 불러오지 못했습니다."); return; }
-    const data = await response.json() as Pick<SchoolData, "groups" | "groupBuses" | "users" | "userBuses" | "checklistItems">;
+    const data = await response.json() as Pick<SchoolData, "groups" | "groupBuses" | "users" | "userBuses" | "checklistItems" | "students" | "assignments" | "exclusions">;
     setSchoolData((current) => current ? { ...current, ...data } : current);
     setManagementLoaded(true);
   }
@@ -327,10 +366,7 @@ export default function Home() {
     const response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(authForm) });
     const result = await response.json() as { error?: string };
     if (!response.ok) { setAuthError(result.error ?? "로그인하지 못했습니다."); setAuthBusy(false); return; }
-    const me = await fetch("/api/auth/me");
-    const profile = await me.json() as { user: SignedInUser | null };
-    setAuthUser(profile.user);
-    setNeedsSetup(false);
+    await loadBootstrap();
     setAuthBusy(false);
   }
 
@@ -341,9 +377,7 @@ export default function Home() {
     const response = await fetch("/api/auth/operation", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: operationCode }) });
     const result = await response.json() as { error?: string };
     if (!response.ok) { setAuthError(result.error ?? "운행 코드로 로그인하지 못했습니다."); setAuthBusy(false); return; }
-    const me = await fetch("/api/auth/me");
-    const profile = await me.json() as { user: SignedInUser | null };
-    setAuthUser(profile.user);
+    await loadBootstrap();
     setView("log");
     setAuthBusy(false);
   }
@@ -358,7 +392,7 @@ export default function Home() {
       setAuthBusy(false);
       return;
     }
-    setAuthUser(result.user);
+    await loadBootstrap();
     setView("log");
     setAuthBusy(false);
   }
@@ -366,6 +400,9 @@ export default function Home() {
   async function logout() {
     await fetch("/api/auth/logout", { method: "POST" });
     setAuthUser(null);
+    setSchoolData(null);
+    setStudents(emptyStudents);
+    runCache.current.clear();
     setView("log");
     setEntryMode("choose");
     setOperationCode("");
@@ -378,6 +415,7 @@ export default function Home() {
     const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ busId, date: selectedDate, status: runStatus, reason: runStatus === "not_operated" ? runReason : "", boarding: runStatus === "operated" ? students.map((student) => ({ studentId: student.id, boarded: student.boarded, note: student.note })) : [] }) });
     const result = await response.json() as { error?: string };
     if (!response.ok) { setDataMessage(result.error ?? "운행일지를 저장하지 못했습니다."); setDataBusy(false); return; }
+    runCache.current.set(`${busId}:${selectedDate}`, { run: { status: runStatus, reason: runStatus === "not_operated" ? runReason : "" }, boarding: runStatus === "operated" ? students.map((student) => ({ student_id: student.id, boarded: student.boarded ? 1 : 0, note: student.note })) : [] });
     setSaved(true);
     setDataMessage("운행일지가 저장되었습니다.");
     setDataBusy(false);
@@ -592,23 +630,9 @@ export default function Home() {
           </div>
         )}
 
-        {view === "stats" && (
-          <section className="main-panel wide">
-            <div className="panel-heading"><div><span className="eyebrow">안전 점검 사이트 입력용</span><h2>월별 미운행 날짜</h2><p>공휴일·재량휴업일과 실제 미운행 기록을 차량별로 모았습니다.</p></div><div className="export-actions"><a className="secondary-button" href={`/api/exports/runs?month=${statisticsMonth}`}>📥 운행일지 다운로드</a><button className="secondary-button" onClick={() => downloadCsv(`${statisticsMonth}_미운행통계.csv`, [["호차", "날짜", "사유"], ...statisticRows.flatMap((row) => row.dates.map((item) => [row.bus, item.date, item.reason]))])}>📥 미운행 통계 다운로드</button><label className="month-control">조회 월<input type="month" value={statisticsMonth} onChange={(event) => setStatisticsMonth(event.target.value)} /></label></div></div>
-            <div className="stats-summary"><div><span>운행 대상 차량</span><strong>{statistics?.buses.length ?? 0}대</strong></div><div><span>공통 미운행일</span><strong>{(statistics?.holidays.length ?? 0) + (statistics?.exclusions.length ?? 0)}일</strong></div><div><span>개별 미운행</span><strong>{statistics?.nonOperatingRuns.length ?? 0}건</strong></div></div>
-            <div className="stats-list">{statisticRows.map((row) => <div className="stats-row" key={row.bus}><strong>{row.bus}</strong><div>{row.dates.length ? row.dates.map((item) => <span className={`nonoperating-date ${item.type}`} key={`${item.date}-${item.reason}`}><b>{koreanDate(item.date)}</b><small>{item.reason}</small></span>) : <span>미운행 없음</span>}</div><small>{row.dates.length}일</small></div>)}</div>
-            <div className="student-absence-panel"><h3>학생별 미탑승 통계</h3><p>학생을 선택하면 해당 학생의 미탑승일, 사유와 총 횟수를 확인합니다.</p><select value={selectedAbsenceStudent} onChange={(event) => setSelectedAbsenceStudent(event.target.value)}><option value="">학생 선택</option>{(schoolData?.students ?? []).map((student) => <option key={student.id} value={student.name}>{student.name} · {student.grade}학년 {student.class_name}</option>)}</select>{selectedAbsenceStudent && <><strong className="absence-total">{selectedAbsenceStudent} · 총 {(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).length}일 미탑승</strong><div className="absence-table">{(studentAbsences?.records ?? []).filter((record) => record.name === selectedAbsenceStudent).map((record, index) => <div key={`${record.date}-${index}`}><strong>{koreanDate(record.date)} · {record.busNumber}호차</strong><small>{record.note}</small></div>)}{!(studentAbsences?.records ?? []).some((record) => record.name === selectedAbsenceStudent) && <div className="empty-state"><strong>이 달의 미탑승 기록이 없습니다.</strong></div>}</div></>}{!selectedAbsenceStudent && <div className="empty-state"><strong>학생을 선택하세요.</strong></div>}</div>
-            <p className="prototype-note">공휴일과 재량휴업일은 모든 차량에 공통으로 포함되며, 차량별 미운행 기록이 추가됩니다.</p>
-          </section>
-        )}
+        {view === "stats" && <StatisticsView month={statisticsMonth} statistics={statistics} rows={statisticRows} students={schoolData?.students ?? []} absences={studentAbsences} selectedStudent={selectedAbsenceStudent} onMonthChange={setStatisticsMonth} onStudentChange={setSelectedAbsenceStudent} />}
 
-        {view === "checklist" && (
-          <section className="main-panel wide checklist-panel">
-            <div className="panel-heading"><div><span className="eyebrow">매월 제출</span><h2>안전 점검 체크리스트</h2><p>선택한 세트에 묶인 차량을 한 번에 점검합니다.</p></div><div className="inspection-controls"><input type="month" value={inspectionMonth} onChange={(event) => setInspectionMonth(event.target.value)} /><select value={inspectionGroupId ?? ""} onChange={(event) => setInspectionGroupId(Number(event.target.value))}>{schoolData?.groups.map((group) => <option key={group.id} value={group.id}>{groupLabel(group)}</option>)}</select><button className="pdf-button" onClick={() => window.print()}>PDF 내보내기</button><div className="completion"><strong>{Object.keys(answers).length}</strong><span>/ {checklistItems.length} 완료</span></div></div></div>
-            {inspectionGroups.map((group) => <div className="check-group" key={group.title}><h3>{group.title}</h3>{group.items.map((item) => { const canEdit = authUser.role === "admin" || item.responsible_role === "all" || item.responsible_role === authUser.role; return <div className={canEdit ? "check-row" : "check-row read-only"} key={item.code}><span>{item.content}{item.responsible_role !== "all" && <small>{item.responsible_role === "driver" ? "운전자 담당" : "동승자 담당"}</small>}</span><div>{(["예", "아니요", "해당없음"] as const).map((answer) => <button key={answer} disabled={!canEdit} className={answers[item.code] === answer ? "answer active" : "answer"} onClick={() => setAnswers((current) => ({ ...current, [item.code]: answer }))}>{answer}</button>)}</div></div>; })}</div>)}
-            <div className="save-bar"><span>{dataMessage || "모든 항목 확인 후 완료 상태로 저장할 수 있습니다."}</span><div className="save-actions"><button className="secondary-save" onClick={() => saveInspection("draft")}>임시 저장</button><button onClick={() => saveInspection("complete")}>점검 완료</button></div></div>
-          </section>
-        )}
+        {view === "checklist" && <ChecklistView month={inspectionMonth} groupId={inspectionGroupId} groupOptions={(schoolData?.groups ?? []).map((group) => ({ id: group.id, label: groupLabel(group) }))} groups={inspectionGroups} answers={answers} role={authUser.role} dataMessage={dataMessage} itemCount={checklistItems.length} onMonthChange={setInspectionMonth} onGroupChange={setInspectionGroupId} onAnswer={(code, answer) => setAnswers((current) => ({ ...current, [code]: answer }))} onSave={(status) => void saveInspection(status)} />}
 
         {view === "settings" && (
           <section className={`settings-page ${settingsSection}`}>

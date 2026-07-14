@@ -1,5 +1,5 @@
 import { assertDatabase, ensureDatabase, jsonError } from "../../../db/runtime";
-import { createPinHash, requireUser } from "../../auth";
+import { createPinHash, currentUser, requireUser } from "../../auth";
 
 type DataAction =
   | { action: "saveBus"; id: number; plateNumber?: string; driverName?: string; attendantName?: string }
@@ -22,23 +22,64 @@ type DataAction =
   | { action: "saveSettings"; schoolYear: number; startDate: string; endDate: string; semester1StartDate: string; semester1EndDate: string; semester2StartDate: string; semester2EndDate: string; includeLaborDay: boolean; includeElectionDay: boolean };
 
 export async function GET(request: Request) {
-  const user = await requireUser(request);
-  if (!user) return jsonError("로그인이 필요합니다.", 401);
+  const url = new URL(request.url);
+  const bootstrap = url.searchParams.get("bootstrap") === "1";
+  const user = await currentUser(request);
+  if (!user) {
+    if (!bootstrap) return jsonError("로그인이 필요합니다.", 401);
+    const db = await ensureDatabase();
+    const { data: admin, error } = await db.from("app_users").select("id").eq("role", "admin").eq("active", 1).limit(1).maybeSingle();
+    if (error) assertDatabase(null, error);
+    return Response.json({ user: null, needsSetup: !admin, data: null }, { status: admin ? 401 : 200 });
+  }
   const db = await ensureDatabase();
-  const scope = new URL(request.url).searchParams.get("scope");
+  const scope = url.searchParams.get("scope");
+  const respond = (data: Record<string, unknown>) => Response.json(bootstrap ? { user, needsSetup: false, data } : data);
 
   if (scope === "management") {
-    if (user.role !== "admin" && !user.demo) return Response.json({ groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [] });
+    const isAdmin = user.role === "admin" || Boolean(user.demo);
     const results = await Promise.all([
       db.from("inspection_groups").select("*").eq("active", 1).order("id"),
       db.from("inspection_group_buses").select("*").order("group_id").order("bus_id"),
-      db.from("app_users").select("id, username, display_name, role, active").eq("active", 1).order("role").order("display_name").order("username"),
-      db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }),
+      isAdmin ? db.from("app_users").select("id, username, display_name, role, active").eq("active", 1).order("role").order("display_name").order("username") : Promise.resolve({ data: [], error: null }),
+      isAdmin ? db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }) : db.from("user_bus_assignments").select("id,user_id,bus_id,start_date,end_date").eq("user_id", user.id),
       db.from("checklist_items").select("id, code, category, content, responsible_role, sort_order").eq("active", 1).order("sort_order"),
+      isAdmin ? db.from("students").select("id,name,grade,class_name").eq("active", 1).order("grade").order("class_name").order("name") : Promise.resolve({ data: [], error: null }),
+      isAdmin ? db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date").order("start_date", { ascending: false }) : Promise.resolve({ data: [], error: null }),
+      isAdmin ? db.from("calendar_exclusions").select("id,date,kind,note").order("date") : Promise.resolve({ data: [], error: null }),
     ]);
     for (const result of results) if (result.error) assertDatabase(null, result.error);
-    const [groups, groupBuses, users, userBuses, checklistItems] = results.map((result) => result.data);
-    return Response.json({ groups, groupBuses, users, userBuses, checklistItems });
+    const [groups, groupBuses, users, userBuses, checklistItems, students, assignments, exclusions] = results.map((result) => result.data);
+    if (isAdmin) return respond({ groups, groupBuses, users, userBuses, checklistItems, students, assignments, exclusions });
+    const allowedBusIds = new Set((userBuses as Array<{ bus_id: number }>).map((item) => item.bus_id));
+    const visibleGroupBuses = (groupBuses as Array<{ group_id: number; bus_id: number }>).filter((item) => allowedBusIds.has(item.bus_id));
+    const visibleGroupIds = new Set(visibleGroupBuses.map((item) => item.group_id));
+    return respond({ groups: (groups as Array<{ id: number }>).filter((item) => visibleGroupIds.has(item.id)), groupBuses: visibleGroupBuses, users: [], userBuses: [], checklistItems });
+  }
+
+  if (bootstrap && !user.demo) {
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("date") ?? "") ? String(url.searchParams.get("date")) : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const results = await Promise.all([
+      db.from("school_settings").select("*").eq("id", 1).maybeSingle(),
+      db.from("buses").select("id,bus_number,plate_number,driver_name,attendant_name").eq("active", 1).order("bus_number"),
+      db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date,student:students!inner(id,name,grade,class_name,active)").lte("start_date", date).gte("end_date", date).eq("student.active", 1).order("bus_id"),
+      db.from("calendar_exclusions").select("id,date,kind,note").gte("date", `${date.slice(0, 4)}-01-01`).lte("date", `${date.slice(0, 4)}-12-31`).order("date"),
+      db.from("daily_runs").select("id,bus_id,date,status,reason,boarding_records(student_id,boarded,note)").eq("date", date),
+      user.role === "admin" ? Promise.resolve({ data: [], error: null }) : db.from("user_bus_assignments").select("bus_id").eq("user_id", user.id).lte("start_date", date).gte("end_date", date),
+    ]);
+    for (const result of results) if (result.error) assertDatabase(null, result.error);
+    const [settingsResult, busesResult, assignmentsResult, exclusionsResult, runsResult, userBusesResult] = results;
+    const allowed = user.role === "admin" ? null : new Set((userBusesResult.data as Array<{ bus_id: number }>).map((item) => item.bus_id));
+    const rawAssignments = assignmentsResult.data as Array<{ id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string; student: { id: number; name: string; grade: number; class_name: string; active: number } | Array<{ id: number; name: string; grade: number; class_name: string; active: number }> }>;
+    const visibleAssignments = rawAssignments.filter((item) => !allowed || allowed.has(item.bus_id));
+    const students = Array.from(new Map(visibleAssignments.flatMap((assignment) => {
+      const student = Array.isArray(assignment.student) ? assignment.student[0] : assignment.student;
+      return student ? [[student.id, { id: student.id, name: student.name, grade: student.grade, class_name: student.class_name }]] as const : [];
+    })).values());
+    const assignments = visibleAssignments.map((assignment) => ({ id: assignment.id, student_id: assignment.student_id, bus_id: assignment.bus_id, stop_name: assignment.stop_name, start_date: assignment.start_date, end_date: assignment.end_date }));
+    const buses = (busesResult.data as Array<{ id: number }>).filter((item) => !allowed || allowed.has(item.id));
+    const initialRuns = (runsResult.data as Array<{ id: number; bus_id: number; date: string; status: string; reason: string | null; boarding_records: Array<{ student_id: number; boarded: number; note: string | null }> }>).filter((item) => !allowed || allowed.has(item.bus_id));
+    return respond({ settings: settingsResult.data, buses, students, assignments, exclusions: exclusionsResult.data, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [], initialRuns, initialDate: date });
   }
 
   const results = await Promise.all([
@@ -71,7 +112,7 @@ export async function GET(request: Request) {
     const plates = ["78가 1234", "71나 5682", "75다 3409", "73라 8261"];
     const drivers = ["김민수", "박서준", "이정희", "최준호"];
     const demoBuses = (buses as Array<Record<string, unknown>>).map((bus, index) => index < 4 ? { ...bus, plate_number: plates[index], driver_name: drivers[index], attendant_name: `${["한지우", "윤서아", "오하린", "문예린"][index]}` } : bus);
-    return Response.json({
+    return respond({
       settings,
       buses: demoBuses,
       students: samplePeople,
@@ -87,14 +128,14 @@ export async function GET(request: Request) {
   }
 
   if (user.role === "admin") {
-    return Response.json({ settings, buses, students, assignments, exclusions, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [] });
+    return respond({ settings, buses, students, assignments, exclusions, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [] });
   }
   const { data: userBuses, error: userBusesError } = await db.from("user_bus_assignments").select("user_id, bus_id").eq("user_id", user.id);
   if (userBusesError) assertDatabase(null, userBusesError);
   const allowed = Array.from(new Set((userBuses as Array<{ user_id: number; bus_id: number }>).map((item) => item.bus_id)));
   const visibleAssignments = (assignments as Array<{ id: number; student_id: number; bus_id: number }>).filter((item) => allowed.includes(item.bus_id));
   const visibleStudentIds = visibleAssignments.map((item) => item.student_id);
-  return Response.json({
+  return respond({
     settings,
     buses: (buses as Array<{ id: number }>).filter((item) => allowed.includes(item.id)),
     students: (students as Array<{ id: number }>).filter((item) => visibleStudentIds.includes(item.id)),

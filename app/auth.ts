@@ -91,19 +91,15 @@ export async function currentUser(request: Request): Promise<AuthUser | null> {
   const db = await ensureDatabase();
   const id = await tokenHash(token);
   const { data: session, error: sessionError } = await db.from("sessions")
-    .select("user_id")
+    .select("user:app_users!inner(id, username, display_name, role, active)")
     .eq("id", id)
     .gt("expires_at", new Date().toISOString())
+    .eq("user.active", 1)
     .maybeSingle();
   if (sessionError) assertDatabase(null, sessionError);
   if (!session) return null;
-  const { data: user, error: userError } = await db.from("app_users")
-    .select("id, username, display_name, role")
-    .eq("id", session.user_id)
-    .eq("active", 1)
-    .maybeSingle();
-  if (userError) assertDatabase(null, userError);
-  return (user as AuthUser | null) ?? null;
+  const relation = session.user as unknown as AuthUser | AuthUser[] | null;
+  return (Array.isArray(relation) ? relation[0] : relation) ?? null;
 }
 
 export async function revokeCurrentSession(request: Request) {
