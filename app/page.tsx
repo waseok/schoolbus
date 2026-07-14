@@ -38,10 +38,10 @@ function downloadCsv(filename: string, rows: string[][]) {
 }
 
 const buses = [
-  { id: 1, label: "1호차", plate: "78가 **34", driver: "김*수", students: 22 },
-  { id: 2, label: "2호차", plate: "71나 **82", driver: "박*준", students: 18 },
-  { id: 3, label: "3호차", plate: "75다 **09", driver: "이*희", students: 20 },
-  { id: 4, label: "4호차", plate: "73라 **61", driver: "최*호", students: 16 },
+  { id: 1, label: "1호차", plate: "78가 **34", driver: "김*수", attendant: "-", students: 22 },
+  { id: 2, label: "2호차", plate: "71나 **82", driver: "박*준", attendant: "-", students: 18 },
+  { id: 3, label: "3호차", plate: "75다 **09", driver: "이*희", attendant: "-", students: 20 },
+  { id: 4, label: "4호차", plate: "73라 **61", driver: "최*호", attendant: "-", students: 16 },
 ];
 
 const initialStudents = [
@@ -51,6 +51,8 @@ const initialStudents = [
   { id: 4, name: "정하윤", detail: "2학년 2반 · 중앙공원 앞", boarded: true, note: "" },
   { id: 5, name: "최지안", detail: "3학년 1반 · 은빛마을 정류장", boarded: true, note: "" },
 ];
+
+const emptyStudents = initialStudents.slice(0, 0);
 
 function NavButton({ active, children, onClick }: { active: boolean; children: React.ReactNode; onClick: () => void }) {
   return <button className={active ? "nav-button active" : "nav-button"} onClick={onClick}>{children}</button>;
@@ -75,7 +77,7 @@ export default function Home() {
   const [dataMessage, setDataMessage] = useState("");
   const [dataBusy, setDataBusy] = useState(false);
   const [selectedDate, setSelectedDate] = useState(localDate);
-  const [students, setStudents] = useState(initialStudents);
+  const [students, setStudents] = useState(emptyStudents);
   const [answers, setAnswers] = useState<Record<string, "예" | "아니요" | "해당없음">>({});
   const [statisticsMonth, setStatisticsMonth] = useState(() => localDate().slice(0, 7));
   const [statistics, setStatistics] = useState<StatisticsData | null>(null);
@@ -183,7 +185,7 @@ export default function Home() {
     const activeAssignments = schoolData.assignments.filter((assignment) => assignment.bus_id === busId && assignment.start_date <= selectedDate && assignment.end_date >= selectedDate);
     const rows = activeAssignments.flatMap((assignment) => {
       const student = schoolData.students.find((item) => item.id === assignment.student_id);
-      return student ? [{ id: student.id, name: student.name, detail: `${student.grade}학년 ${student.class_name} · ${assignment.stop_name || "정류장 미등록"}`, boarded: false, note: "" }] : [];
+      return student ? [{ id: student.id, name: student.name, detail: `${student.grade}학년 ${student.class_name} · ${assignment.stop_name || "정류장 미등록"}`, boarded: true, note: "" }] : [];
     });
     setStudents(rows);
     fetch(`/api/runs?busId=${busId}&date=${selectedDate}`)
@@ -231,16 +233,23 @@ export default function Home() {
   }, [schoolData]);
 
   useEffect(() => {
+    setStudentForm((current) => ({ ...current, startDate: settingsForm.startDate, endDate: settingsForm.endDate }));
+    setImportDates({ startDate: settingsForm.startDate, endDate: settingsForm.endDate });
+  }, [settingsForm.startDate, settingsForm.endDate]);
+
+  useEffect(() => {
     if (!reassignForm.studentId && schoolData?.students.length) setReassignForm((current) => ({ ...current, studentId: schoolData.students[0].id }));
   }, [schoolData, reassignForm.studentId]);
 
   useEffect(() => {
-    if (!studentEditForm.id && schoolData?.students.length) {
-      const student = schoolData.students[0];
-      const assignment = schoolData.assignments.find((item) => item.student_id === student.id);
-      setStudentEditForm({ id: student.id, name: student.name, grade: student.grade, className: student.class_name, assignmentId: assignment?.id ?? 0, stopName: assignment?.stop_name ?? "" });
-    }
+    if (!schoolData?.students.some((student) => student.id === studentEditForm.id)) setStudentEditForm((current) => ({ ...current, id: 0, assignmentId: 0 }));
   }, [schoolData, studentEditForm.id]);
+
+  useEffect(() => {
+    if (!dataMessage || dataBusy) return;
+    const timeout = window.setTimeout(() => setDataMessage(""), 4500);
+    return () => window.clearTimeout(timeout);
+  }, [dataMessage, dataBusy]);
 
   useEffect(() => {
     if (!schoolData?.checklistItems) return;
@@ -265,7 +274,7 @@ export default function Home() {
     setSchoolData(data);
     const counts = new Map<number, number>();
     data.assignments.forEach((assignment) => counts.set(assignment.bus_id, (counts.get(assignment.bus_id) ?? 0) + 1));
-    const mapped = data.buses.map((bus) => ({ id: bus.id, label: `${bus.bus_number}호차`, plate: maskPlate(bus.plate_number), driver: maskName(bus.driver_name), students: counts.get(bus.id) ?? 0 }));
+    const mapped = data.buses.map((bus) => ({ id: bus.id, label: `${bus.bus_number}호차`, plate: maskPlate(bus.plate_number), driver: maskName(bus.driver_name), attendant: maskName(bus.attendant_name) || "-", students: counts.get(bus.id) ?? 0 }));
     setLiveBuses(mapped);
     if (mapped.length && !mapped.some((bus) => bus.id === busId)) setBusId(mapped[0].id);
   }
@@ -304,7 +313,7 @@ export default function Home() {
       }
       const counts = new Map<number, number>();
       next.assignments.forEach((assignment) => counts.set(assignment.bus_id, (counts.get(assignment.bus_id) ?? 0) + 1));
-      setLiveBuses(next.buses.map((bus) => ({ id: bus.id, label: `${bus.bus_number}호차`, plate: maskPlate(bus.plate_number), driver: maskName(bus.driver_name), students: counts.get(bus.id) ?? 0 })));
+      setLiveBuses(next.buses.map((bus) => ({ id: bus.id, label: `${bus.bus_number}호차`, plate: maskPlate(bus.plate_number), driver: maskName(bus.driver_name), attendant: maskName(bus.attendant_name) || "-", students: counts.get(bus.id) ?? 0 })));
       return next;
     });
     return true;
@@ -446,6 +455,34 @@ export default function Home() {
     }
   }
 
+  function renderExclusionSettingsCard() {
+    return <form className="main-panel exclusion-settings" onSubmit={async (event) => {
+      event.preventDefault();
+      const ok = await adminAction({ action: "addExclusion", date: exclusionForm.date, kind: "discretionary_holiday", note: exclusionForm.note }, "재량휴업일을 추가했습니다.");
+      if (ok) setExclusionForm((current) => ({ ...current, date: "" }));
+    }}>
+      <div className="panel-heading"><div><h2>재량휴업일·제외일</h2><p>등록한 날짜는 운행일지와 미운행 통계에서 자동 제외됩니다.</p></div></div>
+      <div className="form-grid"><label>날짜<input type="date" value={exclusionForm.date} onChange={(event) => setExclusionForm((current) => ({ ...current, date: event.target.value }))} required /></label><label>사유<input value={exclusionForm.note} onChange={(event) => setExclusionForm((current) => ({ ...current, note: event.target.value }))} /></label></div>
+      <div className="exclusion-list">{schoolData?.exclusions.map((item) => <div className="calendar-tag" key={item.id}><strong>{koreanDate(item.date)}</strong><span>{item.note ?? "제외일"}</span><button type="button" onClick={() => adminAction({ action: "deleteExclusion", id: item.id }, "제외일을 삭제했습니다.")}>삭제</button></div>)}</div>
+      <div className="form-footer"><button>재량휴업일 저장</button></div>
+    </form>;
+  }
+
+  function renderStudentEditor() {
+    const matches = (schoolData?.students ?? []).filter((student) => student.name.includes(studentSearch.trim()));
+    return <section className="main-panel student-editor">
+      <div className="panel-heading"><div><h2>학생 정보 검색·수정</h2><p>이름을 검색한 뒤 수정 버튼을 눌러 학생 정보와 승차장소를 변경하세요.</p></div></div>
+      <div className="student-search"><label>학생 이름 검색<input value={studentSearch} onChange={(event) => { setStudentSearch(event.target.value); setStudentEditForm((current) => ({ ...current, id: 0, assignmentId: 0 })); }} placeholder="예: 김시완" /></label>
+        {studentSearch.trim() && <div className="student-search-results">{matches.map((student) => {
+          const assignment = schoolData?.assignments.find((item) => item.student_id === student.id);
+          const bus = liveBuses.find((item) => item.id === assignment?.bus_id);
+          return <div key={student.id}><strong>{student.name} · {student.grade}학년 {student.class_name}</strong><span>{bus ? `${bus.label} · ${assignment?.stop_name ?? "승차장소 미등록"}` : "차량 미배정"}</span><button type="button" onClick={() => setStudentEditForm({ id: student.id, name: student.name, grade: student.grade, className: student.class_name, assignmentId: assignment?.id ?? 0, stopName: assignment?.stop_name ?? "" })}>수정</button></div>;
+        })}{matches.length === 0 && <div><span>검색 결과가 없습니다.</span></div>}</div>}
+      </div>
+      {studentEditForm.id > 0 && <form className="form-grid student-edit-form" onSubmit={async (event) => { event.preventDefault(); const ok = await adminAction({ action: "updateStudent", ...studentEditForm }, "학생 정보와 승차장소를 수정했습니다."); if (ok) setStudentEditForm((current) => ({ ...current, id: 0, assignmentId: 0 })); }}><label>이름<input value={studentEditForm.name} onChange={(event) => setStudentEditForm((current) => ({ ...current, name: event.target.value }))} /></label><label>학년<select value={studentEditForm.grade} onChange={(event) => setStudentEditForm((current) => ({ ...current, grade: Number(event.target.value) }))}>{[1,2,3,4,5,6].map((grade) => <option key={grade} value={grade}>{grade}학년</option>)}</select></label><label>반<input value={studentEditForm.className} onChange={(event) => setStudentEditForm((current) => ({ ...current, className: event.target.value }))} /></label><label>승차장소<input value={studentEditForm.stopName} onChange={(event) => setStudentEditForm((current) => ({ ...current, stopName: event.target.value }))} placeholder="예: GS편의점" /></label><div className="student-editor-actions"><button type="button" className="secondary-button" onClick={() => setStudentEditForm((current) => ({ ...current, id: 0, assignmentId: 0 }))}>취소</button><button className="student-save-button" disabled={dataBusy}>{dataBusy ? "수정 중…" : "학생 정보 수정"}</button></div></form>}
+    </section>;
+  }
+
   function groupLabel(group: ApiGroup) {
     const busNumbers = schoolData?.groupBuses.filter((item) => item.group_id === group.id).map((item) => schoolData.buses.find((bus) => bus.id === item.bus_id)?.bus_number).filter((value): value is number => Boolean(value)) ?? [];
     return `${group.name} (${busNumbers.map((number) => `${number}호차`).join(" · ") || "차량 미지정"})`;
@@ -528,6 +565,7 @@ export default function Home() {
                 <label>운행일<input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} /></label>
                 <label>차량<select value={busId} onChange={(event) => setBusId(Number(event.target.value))}>{liveBuses.map((bus) => <option key={bus.id} value={bus.id}>{bus.label} · {bus.plate}</option>)}</select></label>
                 <div className="driver-chip"><span>운전자</span><strong>{selectedBus.driver}</strong></div>
+                <div className="driver-chip"><span>동승자</span><strong>{selectedBus.attendant}</strong></div>
               </div>
               <div className={excludedReason ? "run-status excluded" : "run-status"}><div><span className="status-dot" />{excludedReason ? "자동 제외일" : runStatus === "operated" ? "정상 운행" : "차량 미운행"}</div><p>{excludedReason ? `${excludedReason} — 운행일지 작성 대상에서 제외됩니다.` : "대한민국 공휴일과 등록된 재량휴업일은 자동으로 일지에서 제외됩니다."}</p>{!excludedReason && <div className="run-toggle"><button className={runStatus === "operated" ? "active" : ""} onClick={() => setRunStatus("operated")}>정상 운행</button><button className={runStatus === "not_operated" ? "active warning" : ""} onClick={() => setRunStatus("not_operated")}>미운행</button></div>}</div>
               {runStatus === "not_operated" && !excludedReason && <div className="not-running-reason"><label>미운행 사유<input value={runReason} onChange={(event) => setRunReason(event.target.value)} placeholder="예: 차량 정비, 운전자 사정" /></label></div>}
@@ -574,6 +612,8 @@ export default function Home() {
 
         {view === "settings" && (
           <section className={`settings-page ${settingsSection}`}>
+            {settingsSection === "calendar" && renderExclusionSettingsCard()}
+            {settingsSection === "students" && renderStudentEditor()}
             <div className="settings-subnav"><button className={settingsSection === "calendar" ? "active" : ""} onClick={() => setSettingsSection("calendar")}>학년도·학기</button><button className={settingsSection === "buses" ? "active" : ""} onClick={() => setSettingsSection("buses")}>차량 정보</button><button className={settingsSection === "students" ? "active" : ""} onClick={() => setSettingsSection("students")}>학생 등록</button><button className={settingsSection === "codes" ? "active" : ""} onClick={() => setSettingsSection("codes")}>운행코드·점검 세트</button><button className={settingsSection === "checklist" ? "active" : ""} onClick={() => setSettingsSection("checklist")}>점검 항목</button></div>
             {settingsSection === "students" && <button className="secondary-button csv-download" onClick={() => downloadCsv("학생명단.csv", [["이름", "학년", "반", "호차", "승차장소"], ...(schoolData?.assignments.flatMap((assignment) => { const student = schoolData.students.find((item) => item.id === assignment.student_id); const bus = schoolData.buses.find((item) => item.id === assignment.bus_id); return student && bus ? [[student.name, String(student.grade), student.class_name, `${bus.bus_number}호차`, assignment.stop_name ?? ""]] : []; }) ?? [])])}>학생명단 CSV 내보내기</button>}
             {settingsSection === "buses" && <div className="main-panel assigned-students"><div className="panel-heading"><div><h2>{liveBuses.find((bus) => bus.id === settingsBusId)?.label ?? "선택 차량"} 배정 학생</h2><p>현재 선택한 차량의 모든 배정 이력입니다.</p></div></div>{schoolData?.assignments.filter((assignment) => assignment.bus_id === settingsBusId).map((assignment) => { const student = schoolData.students.find((item) => item.id === assignment.student_id); return student ? <div className="assigned-student-row" key={assignment.id}><strong>{student.name}</strong><span>{student.grade}학년 {student.class_name} · {assignment.stop_name ?? "승차장소 미등록"}</span><small>{assignment.start_date} ~ {assignment.end_date}</small></div> : null; })}</div>}
