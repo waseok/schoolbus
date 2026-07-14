@@ -13,14 +13,14 @@ export async function POST(request: Request) {
     if (!user) return jsonError("관리자 권한이 필요합니다.", 403);
     if (user.demo) return jsonError("체험 모드에서는 실제 데이터를 저장하지 않습니다.", 403);
     const form = await request.formData();
-    const file = form.get("file");
+    const uploadedFile = form.get("file");
     const startDate = String(form.get("startDate") ?? "");
     const endDate = String(form.get("endDate") ?? "");
-    if (!(file instanceof File) || file.size === 0 || file.size > 5 * 1024 * 1024) return jsonError("5MB 이하의 엑셀 파일을 선택하세요.");
+    if (!uploadedFile || typeof uploadedFile === "string" || !("arrayBuffer" in uploadedFile) || uploadedFile.size === 0 || uploadedFile.size > 5 * 1024 * 1024) return jsonError("5MB 이하의 엑셀 파일을 선택하세요.");
     if (!/^20\d{2}-\d{2}-\d{2}$/.test(startDate) || !/^20\d{2}-\d{2}-\d{2}$/.test(endDate) || startDate > endDate) return jsonError("일괄 적용할 배정 기간을 확인하세요.");
 
     const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(await file.arrayBuffer());
+    await workbook.xlsx.load(await uploadedFile.arrayBuffer());
     const sheet = workbook.worksheets[0];
     if (!sheet) return jsonError("학생등록 시트를 찾을 수 없습니다.");
     const actualHeaders = ((sheet.getRow(1).values ?? []) as ExcelJS.CellValue[]).slice(1).map((value) => String(value ?? "").trim());
@@ -52,6 +52,7 @@ export async function POST(request: Request) {
     return Response.json({ ok: true, count: rows.length });
   } catch (error) {
     console.error("Student import failed", error);
-    return jsonError("학생 일괄 등록 중 오류가 발생했습니다. 엑셀 양식과 등록된 차량번호를 확인하세요.", 500);
+    const detail = error instanceof Error ? error.message : "알 수 없는 서버 오류";
+    return jsonError(`학생 일괄 등록 중 서버 오류가 발생했습니다: ${detail}`, 500);
   }
 }
