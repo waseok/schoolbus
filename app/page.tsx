@@ -94,6 +94,9 @@ export default function Home() {
   const [settingsForm, setSettingsForm] = useState({ schoolYear: 2026, startDate: "2026-03-02", endDate: "2027-02-28", semester1StartDate: "2026-03-02", semester1EndDate: "2026-08-31", semester2StartDate: "2026-09-01", semester2EndDate: "2027-02-28", includeLaborDay: true, includeElectionDay: true });
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importDates, setImportDates] = useState({ startDate: "2026-03-02", endDate: "2027-02-28" });
+  const [importBusy, setImportBusy] = useState(false);
+  const [importMessage, setImportMessage] = useState("");
+  const [importSucceeded, setImportSucceeded] = useState(false);
   const [checklistDrafts, setChecklistDrafts] = useState<Record<number, { content: string; responsibleRole: "all" | "driver" | "attendant" }>>({});
   const [holidays, setHolidays] = useState<Array<{ date: string; names: string[] }>>([]);
   const [saved, setSaved] = useState(false);
@@ -333,15 +336,32 @@ export default function Home() {
 
   async function importStudents(event: React.FormEvent) {
     event.preventDefault();
-    if (!importFile) { setDataMessage("업로드할 엑셀 파일을 선택하세요."); return; }
+    if (!importFile) { setImportSucceeded(false); setImportMessage("업로드할 엑셀 파일을 선택하세요."); return; }
     const form = new FormData();
     form.set("file", importFile);
     form.set("startDate", importDates.startDate);
     form.set("endDate", importDates.endDate);
-    const response = await fetch("/api/students/import", { method: "POST", body: form });
-    const result = await response.json() as { error?: string; count?: number };
-    setDataMessage(response.ok ? `${result.count}명의 학생을 일괄 등록했습니다.` : result.error ?? "학생 일괄 등록에 실패했습니다.");
-    if (response.ok) { setImportFile(null); await loadSchoolData(); }
+    setImportBusy(true);
+    setImportSucceeded(false);
+    setImportMessage("학생 정보를 등록하고 있습니다. 잠시만 기다려 주세요.");
+    try {
+      const response = await fetch("/api/students/import", { method: "POST", body: form });
+      const result = await response.json().catch(() => ({})) as { error?: string; count?: number };
+      if (!response.ok) {
+        setImportMessage(result.error ?? "학생 일괄 등록에 실패했습니다. 잠시 후 다시 시도하세요.");
+        return;
+      }
+      const message = `${result.count ?? 0}명의 학생을 일괄 등록했습니다.`;
+      setImportSucceeded(true);
+      setImportMessage(message);
+      setDataMessage(message);
+      setImportFile(null);
+      await loadSchoolData();
+    } catch {
+      setImportMessage("서버와 통신하지 못했습니다. 인터넷 연결 후 다시 시도하세요.");
+    } finally {
+      setImportBusy(false);
+    }
   }
 
   function groupLabel(group: ApiGroup) {
@@ -474,7 +494,7 @@ export default function Home() {
             <div className="settings-subnav"><button className={settingsSection === "calendar" ? "active" : ""} onClick={() => setSettingsSection("calendar")}>학년도·학기</button><button className={settingsSection === "buses" ? "active" : ""} onClick={() => setSettingsSection("buses")}>차량 정보</button><button className={settingsSection === "students" ? "active" : ""} onClick={() => setSettingsSection("students")}>학생 등록</button><button className={settingsSection === "codes" ? "active" : ""} onClick={() => setSettingsSection("codes")}>운행코드·점검 세트</button><button className={settingsSection === "checklist" ? "active" : ""} onClick={() => setSettingsSection("checklist")}>점검 항목</button></div>
             {settingsSection === "students" && <button className="secondary-button csv-download" onClick={() => downloadCsv("학생명단.csv", [["이름", "학년", "반", "호차", "승차장소"], ...(schoolData?.assignments.flatMap((assignment) => { const student = schoolData.students.find((item) => item.id === assignment.student_id); const bus = schoolData.buses.find((item) => item.id === assignment.bus_id); return student && bus ? [[student.name, String(student.grade), student.class_name, `${bus.bus_number}호차`, assignment.stop_name ?? ""]] : []; }) ?? [])])}>학생명단 CSV 내보내기</button>}
             {settingsSection === "buses" && <div className="main-panel assigned-students"><div className="panel-heading"><div><h2>{liveBuses.find((bus) => bus.id === settingsBusId)?.label ?? "선택 차량"} 배정 학생</h2><p>현재 선택한 차량의 모든 배정 이력입니다.</p></div></div>{schoolData?.assignments.filter((assignment) => assignment.bus_id === settingsBusId).map((assignment) => { const student = schoolData.students.find((item) => item.id === assignment.student_id); return student ? <div className="assigned-student-row" key={assignment.id}><strong>{student.name}</strong><span>{student.grade}학년 {student.class_name} · {assignment.stop_name ?? "승차장소 미등록"}</span><small>{assignment.start_date} ~ {assignment.end_date}</small></div> : null; })}</div>}
-            {settingsSection === "students" && <form className="main-panel import-panel" onSubmit={importStudents}><div className="panel-heading"><div><h2>엑셀 학생 일괄등록</h2><p>양식을 내려받아 작성한 뒤 업로드하세요. 배정 시작일과 종료일은 모든 행에 동일하게 적용됩니다.</p></div><a className="secondary-button" href="/api/students/template">양식 다운로드</a></div><div className="form-grid"><label className="span-two">학생등록 엑셀 파일<input type="file" accept=".xlsx" onChange={(event) => setImportFile(event.target.files?.[0] ?? null)} /></label><label>배정 시작일<input type="date" value={importDates.startDate} onChange={(event) => setImportDates((current) => ({ ...current, startDate: event.target.value }))} /></label><label>배정 종료일<input type="date" value={importDates.endDate} onChange={(event) => setImportDates((current) => ({ ...current, endDate: event.target.value }))} /></label></div><div className="form-footer"><button>학생 일괄 등록</button></div></form>}
+            {settingsSection === "students" && <form className="main-panel import-panel" onSubmit={importStudents}><div className="panel-heading"><div><h2>엑셀 학생 일괄등록</h2><p>양식을 내려받아 작성한 뒤 업로드하세요. 배정 시작일과 종료일은 모든 행에 동일하게 적용됩니다.</p></div><a className="secondary-button" href="/api/students/template">양식 다운로드</a></div><div className="form-grid"><label className="span-two">학생등록 엑셀 파일<input type="file" accept=".xlsx" onChange={(event) => { setImportFile(event.target.files?.[0] ?? null); setImportMessage(""); setImportSucceeded(false); }} />{importFile && <small className="selected-file">선택한 파일: {importFile.name}</small>}</label><label>배정 시작일<input type="date" value={importDates.startDate} onChange={(event) => setImportDates((current) => ({ ...current, startDate: event.target.value }))} /></label><label>배정 종료일<input type="date" value={importDates.endDate} onChange={(event) => setImportDates((current) => ({ ...current, endDate: event.target.value }))} /></label></div>{importMessage && <p className={`import-message ${importSucceeded ? "success" : ""}`} role="status">{importMessage}</p>}<div className="form-footer"><button disabled={importBusy}>{importBusy ? "학생 등록 중…" : "학생 일괄 등록"}</button></div></form>}
             {settingsSection === "students" && <section className="main-panel student-directory"><div className="panel-heading"><div><h2>학생·호차별 배정 현황</h2><p>학생을 선택해 기본 정보를 수정하거나, 호차별로 배정 학생을 확인하세요.</p></div><select value={studentEditForm.id} onChange={(event) => { const student = schoolData?.students.find((item) => item.id === Number(event.target.value)); if (student) setStudentEditForm({ id: student.id, name: student.name, grade: student.grade, className: student.class_name }); }}>{schoolData?.students.map((student) => <option key={student.id} value={student.id}>{student.name} · {student.grade}학년 {student.class_name}</option>)}</select></div><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "updateStudent", ...studentEditForm }, "학생 정보를 수정했습니다."); }}><label>이름<input value={studentEditForm.name} onChange={(event) => setStudentEditForm((current) => ({ ...current, name: event.target.value }))} /></label><label>학년<select value={studentEditForm.grade} onChange={(event) => setStudentEditForm((current) => ({ ...current, grade: Number(event.target.value) }))}>{[1,2,3,4,5,6].map((grade) => <option key={grade} value={grade}>{grade}학년</option>)}</select></label><label>반<input value={studentEditForm.className} onChange={(event) => setStudentEditForm((current) => ({ ...current, className: event.target.value }))} /></label><button className="student-save-button">학생 정보 저장</button></form><div className="bus-student-overview">{liveBuses.map((bus) => <div key={bus.id}><strong>{bus.label} · {bus.students}명</strong>{schoolData?.assignments.filter((assignment) => assignment.bus_id === bus.id).map((assignment) => <span key={assignment.id}>{schoolData.students.find((student) => student.id === assignment.student_id)?.name}</span>)}</div>)}</div></section>}
             {settingsSection === "calendar" && <form className="main-panel semester-settings" onSubmit={async (event) => { event.preventDefault(); await adminAction({ action: "saveSettings", ...settingsForm }, "학년도와 학기 기간을 저장했습니다."); }}><div className="panel-heading"><div><h2>학년도와 학기 기간</h2><p>학생 배정과 운행 관리에 사용할 기간을 직접 설정하세요.</p></div></div><div className="form-grid"><label>학년도<input type="number" value={settingsForm.schoolYear} onChange={(event) => setSettingsForm((current) => ({ ...current, schoolYear: Number(event.target.value) }))} /></label><label>전체 운행 시작일<input type="date" value={settingsForm.startDate} onChange={(event) => setSettingsForm((current) => ({ ...current, startDate: event.target.value }))} /></label><label>전체 운행 종료일<input type="date" value={settingsForm.endDate} onChange={(event) => setSettingsForm((current) => ({ ...current, endDate: event.target.value }))} /></label><label>1학기 시작일<input type="date" value={settingsForm.semester1StartDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester1StartDate: event.target.value }))} /></label><label>1학기 종료일<input type="date" value={settingsForm.semester1EndDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester1EndDate: event.target.value }))} /></label><label>2학기 시작일<input type="date" value={settingsForm.semester2StartDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester2StartDate: event.target.value }))} /></label><label>2학기 종료일<input type="date" value={settingsForm.semester2EndDate} onChange={(event) => setSettingsForm((current) => ({ ...current, semester2EndDate: event.target.value }))} /></label></div><div className="form-footer"><button>학기 기간 저장</button></div></form>}
             {settingsSection === "codes" && <section className="main-panel staff-picker"><div className="panel-heading"><div><h2>등록 운전자·동승자 선택</h2><p>차량정보에 입력된 담당자를 선택하면 코드 발급 양식에 자동 입력됩니다. 같은 담당자를 여러 차량에 반복 선택할 수 있습니다.</p></div><select defaultValue="" onChange={(event) => { const [role, ...name] = event.target.value.split(":"); if (name.length) setAccountForm((current) => ({ ...current, role: role as "driver" | "attendant", displayName: name.join(":") })); }}><option value="">직접 입력 또는 담당자 선택</option>{operationPeople.map((person) => <option key={`${person.role}:${person.name}`} value={`${person.role}:${person.name}`}>{person.name} · {person.role === "driver" ? "운전자" : "동승자"}</option>)}</select></div></section>}
