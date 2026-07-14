@@ -9,6 +9,9 @@ type DataAction =
   | { action: "saveAssignment"; studentId: number; busId: number; stopName?: string; startDate: string; endDate: string }
   | { action: "reassignStudent"; studentId: number; busId: number; stopName?: string; startDate: string; endDate: string }
   | { action: "deleteAssignment"; assignmentId: number }
+  | { action: "moveAssignment"; assignmentId: number; busId: number }
+  | { action: "deleteBusAssignments"; busId: number }
+  | { action: "deleteAllStudents" }
   | { action: "addExclusion"; date: string; kind: "discretionary_holiday" | "emergency" | "other"; note?: string }
   | { action: "deleteExclusion"; id: number }
   | { action: "saveGroupBuses"; groupId: number; busIds: number[] }
@@ -132,28 +135,36 @@ export async function POST(request: Request) {
     if (error) assertDatabase(null, error);
   } else if (body.action === "reassignStudent") {
     if (!body.studentId || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("학생과 새 배정 기간을 확인하세요.");
-    const { data: overlapping, error: overlapError } = await db.from("assignments").select("id, start_date")
-      .eq("student_id", body.studentId).lte("start_date", body.startDate).gte("end_date", body.startDate)
+    const { data: overlapping, error: overlapError } = await db.from("assignments").select("id")
+      .eq("student_id", body.studentId).lte("start_date", body.endDate).gte("end_date", body.startDate)
       .order("start_date", { ascending: false }).limit(1).maybeSingle();
     if (overlapError) assertDatabase(null, overlapError);
     if (overlapping) {
-      if (overlapping.start_date >= body.startDate) return jsonError("같은 날짜에 시작하는 다른 차량 배정이 있습니다.");
-      const previousDay = new Date(`${body.startDate}T12:00:00Z`);
-      previousDay.setUTCDate(previousDay.getUTCDate() - 1);
-      const { error } = await db.from("assignments").update({ end_date: previousDay.toISOString().slice(0, 10) }).eq("id", overlapping.id);
+      const { error } = await db.from("assignments").update({ bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate }).eq("id", overlapping.id);
+      if (error) assertDatabase(null, error);
+    } else {
+      const { error } = await db.from("assignments").insert({ student_id: body.studentId, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
       if (error) assertDatabase(null, error);
     }
-    const { data: futureOverlap, error: futureError } = await db.from("assignments").select("id")
-      .eq("student_id", body.studentId).lte("start_date", body.endDate).gte("end_date", body.startDate).limit(1).maybeSingle();
-    if (futureError) assertDatabase(null, futureError);
-    if (futureOverlap) return jsonError("새 배정 기간과 겹치는 다른 차량 배정이 있습니다.");
-    const { error } = await db.from("assignments").insert({ student_id: body.studentId, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
-    if (error) assertDatabase(null, error);
   } else if (body.action === "deleteAssignment") {
     if (!Number.isInteger(body.assignmentId) || body.assignmentId <= 0) return jsonError("삭제할 학생 배정 정보가 올바르지 않습니다.");
     const { data, error } = await db.from("assignments").delete().eq("id", body.assignmentId).select("id").maybeSingle();
     if (error) assertDatabase(null, error, "학생 차량 배정을 삭제하지 못했습니다.");
     if (!data) return jsonError("이미 삭제되었거나 찾을 수 없는 학생 배정입니다.", 404);
+  } else if (body.action === "moveAssignment") {
+    if (!Number.isInteger(body.assignmentId) || body.assignmentId <= 0 || !Number.isInteger(body.busId) || body.busId <= 0) return jsonError("학생 배정 이동 정보가 올바르지 않습니다.");
+    const { data, error } = await db.from("assignments").update({ bus_id: body.busId }).eq("id", body.assignmentId).select("id").maybeSingle();
+    if (error) assertDatabase(null, error, "학생 차량 배정을 옮기지 못했습니다.");
+    if (!data) return jsonError("이미 삭제되었거나 찾을 수 없는 학생 배정입니다.", 404);
+  } else if (body.action === "deleteBusAssignments") {
+    if (!Number.isInteger(body.busId) || body.busId <= 0) return jsonError("삭제할 호차 정보가 올바르지 않습니다.");
+    const { error } = await db.from("assignments").delete().eq("bus_id", body.busId);
+    if (error) assertDatabase(null, error, "호차 학생 배정을 삭제하지 못했습니다.");
+  } else if (body.action === "deleteAllStudents") {
+    const { error: assignmentsError } = await db.from("assignments").delete().gt("id", 0);
+    if (assignmentsError) assertDatabase(null, assignmentsError, "학생 배정을 삭제하지 못했습니다.");
+    const { error: studentsError } = await db.from("students").update({ active: 0 }).eq("active", 1);
+    if (studentsError) assertDatabase(null, studentsError, "학생 명단을 삭제하지 못했습니다.");
   } else if (body.action === "addExclusion") {
     if (!body.date) return jsonError("제외 날짜를 입력하세요.");
     const { error } = await db.from("calendar_exclusions").upsert({ date: body.date, kind: body.kind, note: body.note?.trim() || null }, { onConflict: "date" });
