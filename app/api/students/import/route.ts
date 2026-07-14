@@ -1,4 +1,4 @@
-import * as XLSX from "xlsx";
+import { read, utils } from "xlsx";
 import { ensureDatabase, jsonError } from "../../../../db/runtime";
 import { requireUser } from "../../../auth";
 
@@ -7,11 +7,16 @@ export const runtime = "nodejs";
 type ImportRow = { name: string; grade: number; className: string; busNumber: number; stopName: string };
 const headers = ["이름", "학년", "반", "차량번호", "승차장소"];
 
+function numberFromCell(value: unknown, unit: "학년" | "호차") {
+  const text = String(value ?? "").trim();
+  return Number(text.replace(unit, "").trim());
+}
+
 async function readRows(file: Blob) {
-  const workbook = XLSX.read(Buffer.from(await file.arrayBuffer()), { type: "buffer", cellText: true, cellDates: false });
+  const workbook = read(Buffer.from(await file.arrayBuffer()), { type: "buffer", cellText: true, cellDates: false });
   const firstSheetName = workbook.SheetNames[0];
   if (!firstSheetName) return null;
-  return XLSX.utils.sheet_to_json<unknown[]>(workbook.Sheets[firstSheetName], { header: 1, defval: "", raw: false });
+  return utils.sheet_to_json<unknown[]>(workbook.Sheets[firstSheetName], { header: 1, defval: "", raw: false });
 }
 
 export async function POST(request: Request) {
@@ -34,7 +39,7 @@ export async function POST(request: Request) {
     sheetRows.slice(1).forEach((sheetRow) => {
       const [name, grade, className, busNumber, stopName] = sheetRow.map((value) => String(value ?? "").trim());
       if (![name, grade, className, busNumber].some(Boolean)) return;
-      rows.push({ name, grade: Number(grade), className, busNumber: Number(busNumber), stopName });
+      rows.push({ name, grade: numberFromCell(grade, "학년"), className, busNumber: numberFromCell(busNumber, "호차"), stopName });
     });
     if (!rows.length || rows.length > 1000) return jsonError("1~1,000명의 학생만 한 번에 등록할 수 있습니다.");
     const invalid = rows.find((row) => !row.name || !Number.isInteger(row.grade) || row.grade < 1 || row.grade > 6 || !row.className || !Number.isInteger(row.busNumber) || row.busNumber < 1);
