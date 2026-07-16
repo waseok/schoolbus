@@ -182,7 +182,12 @@ export async function POST(request: Request) {
       .insert({ name: body.name.trim(), grade: body.grade, class_name: body.className.trim() }).select("id").single();
     const student = assertDatabase(inserted, studentError);
     const { error } = await db.from("assignments").insert({ student_id: student.id, bus_id: body.busId, stop_name: body.stopName?.trim() || null, start_date: body.startDate, end_date: body.endDate });
-    if (error) assertDatabase(null, error);
+    if (error) {
+      // Keep registration retries from leaving an unassigned duplicate student behind.
+      const { error: cleanupError } = await db.from("students").delete().eq("id", student.id);
+      if (cleanupError) assertDatabase(null, cleanupError, "학생 배정 저장 실패 후 임시 학생 정보를 정리하지 못했습니다.");
+      assertDatabase(null, error, "학생은 등록되었지만 차량 배정을 저장하지 못해 등록을 취소했습니다.");
+    }
   } else if (body.action === "saveAssignment") {
     if (!body.studentId || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("학생 배정 기간을 확인하세요.");
     const { data: overlap, error: overlapError } = await db.from("assignments").select("id")
