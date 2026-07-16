@@ -14,7 +14,7 @@ type EntryMode = "choose" | "admin" | "operation";
 type SignedInUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant"; demo?: boolean };
 type ApiBus = { id: number; bus_number: number; plate_number: string | null; driver_name: string | null; attendant_name: string | null };
 type ApiStudent = { id: number; name: string; grade: number; class_name: string };
-type ApiAssignment = { id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string };
+type ApiAssignment = { id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string; boarding_order?: number };
 type ApiGroup = { id: number; name: string };
 type ApiChecklistItem = { id: number; code: string; category: string; content: string; responsible_role: "all" | "driver" | "attendant"; sort_order: number };
 type ApiUser = { id: number; username: string; display_name: string | null; role: "admin" | "driver" | "attendant"; active: number };
@@ -25,6 +25,7 @@ type BootstrapRun = { bus_id: number; date: string; status?: "operated" | "not_o
 type BootstrapData = SchoolData & { initialRuns?: BootstrapRun[]; initialDate?: string };
 type StatisticsData = { month: string; holidays: Array<{ date: string; names: string[] }>; exclusions: Array<{ date: string; kind: string; note: string | null }>; nonOperatingRuns: Array<{ bus_id: number; date: string; reason: string | null }>; buses: Array<{ id: number; bus_number: number }> };
 type StudentAbsenceData = { records: Array<{ name: string; grade: number; className: string; date: string; busNumber: number; note: string }> };
+type RunStudent = { id: number; assignmentId: number; name: string; detail: string; stopName: string; boarded: boolean; note: string };
 
 function localDate() {
   return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
@@ -51,15 +52,38 @@ const buses = [
   { id: 4, label: "4호차", plate: "73라 **61", driver: "최*호", attendant: "-", students: 16 },
 ];
 
-const initialStudents = [
-  { id: 1, name: "김도윤", detail: "1학년 2반 · 은빛마을 정류장", boarded: true, note: "" },
-  { id: 2, name: "박서연", detail: "1학년 3반 · 중앙공원 앞", boarded: true, note: "" },
-  { id: 3, name: "이준우", detail: "2학년 1반 · 한솔아파트", boarded: false, note: "병원 진료" },
-  { id: 4, name: "정하윤", detail: "2학년 2반 · 중앙공원 앞", boarded: true, note: "" },
-  { id: 5, name: "최지안", detail: "3학년 1반 · 은빛마을 정류장", boarded: true, note: "" },
+const initialStudents: RunStudent[] = [
+  { id: 1, assignmentId: 1, name: "김도윤", detail: "1학년 2반 · 은빛마을 정류장", stopName: "은빛마을 정류장", boarded: true, note: "" },
+  { id: 2, assignmentId: 2, name: "박서연", detail: "1학년 3반 · 중앙공원 앞", stopName: "중앙공원 앞", boarded: true, note: "" },
+  { id: 3, assignmentId: 3, name: "이준우", detail: "2학년 1반 · 한솔아파트", stopName: "한솔아파트", boarded: false, note: "병원 진료" },
+  { id: 4, assignmentId: 4, name: "정하윤", detail: "2학년 2반 · 중앙공원 앞", stopName: "중앙공원 앞", boarded: true, note: "" },
+  { id: 5, assignmentId: 5, name: "최지안", detail: "3학년 1반 · 은빛마을 정류장", stopName: "은빛마을 정류장", boarded: true, note: "" },
 ];
 
-const emptyStudents = initialStudents.slice(0, 0);
+const emptyStudents: RunStudent[] = [];
+
+function buildRunStudents(data: SchoolData, selectedBusId: number, date: string) {
+  const assignments = data.assignments.filter((assignment) => assignment.bus_id === selectedBusId && assignment.start_date <= date && assignment.end_date >= date);
+  const useStopOrder = assignments.some((assignment) => !assignment.boarding_order);
+  return assignments.flatMap((assignment) => {
+    const student = data.students.find((item) => item.id === assignment.student_id);
+    return student ? [{ assignment, student }] : [];
+  }).sort((a, b) => {
+    if (!useStopOrder) return (a.assignment.boarding_order ?? 0) - (b.assignment.boarding_order ?? 0);
+    return (a.assignment.stop_name || "정류장 미등록").localeCompare(b.assignment.stop_name || "정류장 미등록", "ko")
+      || a.student.grade - b.student.grade
+      || a.student.class_name.localeCompare(b.student.class_name, "ko")
+      || a.student.name.localeCompare(b.student.name, "ko");
+  }).map(({ assignment, student }) => ({
+    id: student.id,
+    assignmentId: assignment.id,
+    name: student.name,
+    detail: `${student.grade}학년 ${student.class_name} · ${assignment.stop_name || "정류장 미등록"}`,
+    stopName: assignment.stop_name || "정류장 미등록",
+    boarded: true,
+    note: "",
+  }));
+}
 
 function NavButton({ active, children, onClick }: { active: boolean; children: React.ReactNode; onClick: () => void }) {
   return <button className={active ? "nav-button active" : "nav-button"} onClick={onClick}>{children}</button>;
@@ -183,11 +207,7 @@ export default function Home() {
 
   useEffect(() => {
     if (view !== "log" || !schoolData || !authUser) return;
-    const activeAssignments = schoolData.assignments.filter((assignment) => assignment.bus_id === busId && assignment.start_date <= selectedDate && assignment.end_date >= selectedDate);
-    const rows = activeAssignments.flatMap((assignment) => {
-      const student = schoolData.students.find((item) => item.id === assignment.student_id);
-      return student ? [{ id: student.id, name: student.name, detail: `${student.grade}학년 ${student.class_name} · ${assignment.stop_name || "정류장 미등록"}`, boarded: true, note: "" }] : [];
-    });
+    const rows = buildRunStudents(schoolData, busId, selectedDate);
     const cacheKey = `${busId}:${selectedDate}`;
     const cached = runCache.current.get(cacheKey);
     if (cached) {
@@ -197,21 +217,31 @@ export default function Home() {
         const savedRecord = cached.boarding.find((record) => record.student_id === student.id);
         return savedRecord ? { ...student, boarded: Boolean(savedRecord.boarded), note: savedRecord.note ?? "" } : student;
       }));
+      setSaved(Boolean(cached.run));
+      setDataMessage(cached.run ? "저장된 운행일지와 최신 학생 명단을 불러왔습니다." : "최신 학생 명단을 불러왔습니다. 탑승 여부를 확인한 뒤 저장하세요.");
       return;
     }
+    const controller = new AbortController();
     setStudents(rows);
-    fetch(`/api/runs?busId=${busId}&date=${selectedDate}`)
+    setSaved(false);
+    setDataMessage("운행일지와 최신 학생 명단을 불러오는 중입니다…");
+    fetch(`/api/runs?busId=${busId}&date=${selectedDate}`, { cache: "no-store", signal: controller.signal })
       .then((response) => response.ok ? response.json() : Promise.reject())
       .then((payload: RunPayload) => {
         runCache.current.set(cacheKey, payload);
         setRunStatus(payload.run?.status ?? "operated");
         setRunReason(payload.run?.reason ?? "");
+        setSaved(Boolean(payload.run));
         setStudents((current) => current.map((student) => {
           const savedRecord = payload.boarding.find((record) => record.student_id === student.id);
           return savedRecord ? { ...student, boarded: Boolean(savedRecord.boarded), note: savedRecord.note ?? "" } : student;
         }));
+        setDataMessage(payload.run ? "저장된 운행일지와 최신 학생 명단을 불러왔습니다." : "최신 학생 명단을 불러왔습니다. 탑승 여부를 확인한 뒤 저장하세요.");
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        if ((error as { name?: string }).name !== "AbortError") setDataMessage("운행일지를 불러오지 못했습니다. 인터넷 연결을 확인한 뒤 다시 시도하세요.");
+      });
+    return () => controller.abort();
   }, [schoolData, authUser, busId, selectedDate, view]);
 
   useEffect(() => {
@@ -308,16 +338,16 @@ export default function Home() {
   }
 
   async function loadSchoolData() {
-    const response = await fetch("/api/data");
+    const response = await fetch("/api/data", { cache: "no-store" });
     if (!response.ok) { setDataMessage("학교 데이터를 불러오지 못했습니다."); return; }
     applyLoadedSchoolData(await response.json() as SchoolData);
   }
 
   async function loadManagementData() {
-    const response = await fetch("/api/data?scope=management");
+    const response = await fetch("/api/data?scope=management", { cache: "no-store" });
     if (!response.ok) { setDataMessage("관리 화면 데이터를 불러오지 못했습니다."); return; }
     const data = await response.json() as Pick<SchoolData, "groups" | "groupBuses" | "users" | "userBuses" | "checklistItems" | "students" | "assignments" | "exclusions">;
-    setSchoolData((current) => current ? { ...current, ...data } : current);
+    if (schoolData) applyLoadedSchoolData({ ...schoolData, ...data });
     setManagementLoaded(true);
   }
 
@@ -337,7 +367,7 @@ export default function Home() {
           assignments: current.assignments.map((assignment) => assignment.id === Number(body.assignmentId) ? { ...assignment, stop_name: String(body.stopName ?? "").trim() || null } : assignment),
         };
       } else if (action === "moveAssignment") {
-        next = { ...current, assignments: current.assignments.map((assignment) => assignment.id === Number(body.assignmentId) ? { ...assignment, bus_id: Number(body.busId) } : assignment) };
+        next = { ...current, assignments: current.assignments.map((assignment) => assignment.id === Number(body.assignmentId) ? { ...assignment, bus_id: Number(body.busId), boarding_order: 0 } : assignment) };
       } else if (action === "deleteAssignment") {
         next = { ...current, assignments: current.assignments.filter((assignment) => assignment.id !== Number(body.assignmentId)) };
       } else if (action === "deleteBusAssignments") {
@@ -404,26 +434,36 @@ export default function Home() {
   }
 
   async function saveRun() {
-    if (excludedReason) return;
+    if (excludedReason) { setDataMessage("자동 제외일은 운행일지를 저장하지 않습니다."); return; }
     setDataBusy(true);
     setDataMessage("운행일지를 저장 중입니다…");
-    const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ busId, date: selectedDate, status: runStatus, reason: runStatus === "not_operated" ? runReason : "", boarding: runStatus === "operated" ? students.map((student) => ({ studentId: student.id, boarded: student.boarded, note: student.note })) : [] }) });
-    const result = await response.json() as { error?: string };
-    if (!response.ok) { setDataMessage(result.error ?? "운행일지를 저장하지 못했습니다."); setDataBusy(false); return; }
-    runCache.current.set(`${busId}:${selectedDate}`, { run: { status: runStatus, reason: runStatus === "not_operated" ? runReason : "" }, boarding: runStatus === "operated" ? students.map((student) => ({ student_id: student.id, boarded: student.boarded ? 1 : 0, note: student.note })) : [] });
-    setSaved(true);
-    setDataMessage("운행일지가 저장되었습니다.");
-    setDataBusy(false);
+    try {
+      const response = await fetch("/api/runs", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ busId, date: selectedDate, status: runStatus, reason: runStatus === "not_operated" ? runReason : "", boarding: runStatus === "operated" ? students.map((student) => ({ studentId: student.id, boarded: student.boarded, note: student.note })) : [] }) });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) { setDataMessage(`운행일지 저장 실패: ${result.error ?? "서버에서 저장하지 못했습니다."}`); return; }
+      runCache.current.set(`${busId}:${selectedDate}`, { run: { status: runStatus, reason: runStatus === "not_operated" ? runReason : "" }, boarding: runStatus === "operated" ? students.map((student) => ({ student_id: student.id, boarded: student.boarded ? 1 : 0, note: student.note })) : [] });
+      setSaved(true);
+      setDataMessage("운행일지가 정상적으로 저장되었습니다.");
+    } catch {
+      setDataMessage("운행일지 저장 실패: 서버와 통신하지 못했습니다. 인터넷 연결을 확인하세요.");
+    } finally {
+      setDataBusy(false);
+    }
   }
 
   async function saveInspection(status: "draft" | "complete" = "draft") {
-    if (!inspectionGroupId) return;
+    if (!inspectionGroupId) { setDataMessage("저장할 점검 세트를 선택하세요."); return; }
     setDataBusy(true);
     setDataMessage(status === "complete" ? "점검표를 완료 처리 중입니다…" : "점검표를 임시 저장 중입니다…");
-    const response = await fetch("/api/inspections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ month: inspectionMonth, groupId: inspectionGroupId, status, answers: Object.entries(answers).map(([itemCode, answer]) => ({ itemCode, answer: answer === "예" ? "yes" : answer === "아니요" ? "no" : "not_applicable" })) }) });
-    const result = await response.json() as { error?: string };
-    setDataMessage(response.ok ? "안전 점검표가 저장되었습니다." : result.error ?? "점검표를 저장하지 못했습니다.");
-    setDataBusy(false);
+    try {
+      const response = await fetch("/api/inspections", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ month: inspectionMonth, groupId: inspectionGroupId, status, answers: Object.entries(answers).map(([itemCode, answer]) => ({ itemCode, answer: answer === "예" ? "yes" : answer === "아니요" ? "no" : "not_applicable" })) }) });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      setDataMessage(response.ok ? "안전 점검표가 저장되었습니다." : `안전 점검표 저장 실패: ${result.error ?? "서버에서 저장하지 못했습니다."}`);
+    } catch {
+      setDataMessage("안전 점검표 저장 실패: 서버와 통신하지 못했습니다.");
+    } finally {
+      setDataBusy(false);
+    }
   }
 
   async function adminAction(body: Record<string, unknown>, successMessage: string) {
@@ -436,9 +476,11 @@ export default function Home() {
       const result = await response.json().catch(() => ({})) as { error?: string };
       setDataMessage(response.ok ? successMessage : result.error ?? `${progress}하지 못했습니다.`);
       if (response.ok) {
+        if (["addStudent", "addStudentAndAssign", "updateStudent", "moveAssignment", "deleteAssignment", "deleteBusAssignments", "deleteAllStudents"].includes(action)) runCache.current.clear();
         const updatedLocally = applyLocalDataChange(body);
-        if (!updatedLocally) await loadSchoolData();
-        if (managementLoaded && ["saveGroupBuses", "addGroup", "deleteGroup", "updateChecklistItem"].includes(action)) await loadManagementData();
+        if (!updatedLocally) {
+          if (managementLoaded) await loadManagementData(); else await loadSchoolData();
+        } else if (managementLoaded && ["saveGroupBuses", "addGroup", "deleteGroup", "updateChecklistItem"].includes(action)) await loadManagementData();
       }
       return response.ok;
     } catch {
@@ -450,12 +492,20 @@ export default function Home() {
   }
 
   async function issueOperationCode() {
-    const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "issueOperationCode", ...accountForm }) });
-    const result = await response.json() as { error?: string; code?: string };
-    if (!response.ok) { setDataMessage(result.error ?? "운행 코드를 발급하지 못했습니다."); return; }
-    setDataMessage(`운행 코드가 발급되었습니다: ${result.code} — 담당자에게 전달하세요.`);
-    setAccountForm((current) => ({ ...current, displayName: "" }));
-    if (managementLoaded) await loadManagementData();
+    setDataBusy(true);
+    setDataMessage("운행 코드를 발급 중입니다…");
+    try {
+      const response = await fetch("/api/data", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "issueOperationCode", ...accountForm }) });
+      const result = await response.json().catch(() => ({})) as { error?: string; code?: string };
+      if (!response.ok) { setDataMessage(`운행 코드 발급 실패: ${result.error ?? "서버에서 발급하지 못했습니다."}`); return; }
+      setDataMessage(`운행 코드가 발급되었습니다: ${result.code} — 담당자에게 전달하세요.`);
+      setAccountForm((current) => ({ ...current, displayName: "" }));
+      if (managementLoaded) await loadManagementData();
+    } catch {
+      setDataMessage("운행 코드 발급 실패: 서버와 통신하지 못했습니다.");
+    } finally {
+      setDataBusy(false);
+    }
   }
 
   async function importStudents(event: React.FormEvent) {
@@ -522,13 +572,69 @@ export default function Home() {
   }
 
   function toggleBoarding(id: number) {
+    const selected = students.find((student) => student.id === id);
+    if (!selected) return;
+    const boarded = !selected.boarded;
     setSaved(false);
-    setStudents((current) => current.map((student) => student.id === id ? { ...student, boarded: !student.boarded } : student));
+    setStudents((current) => current.map((student) => student.id === id ? { ...student, boarded } : student));
+    setDataMessage(`${selected.name} 학생을 ${boarded ? "탑승" : "미탑승"}으로 변경했습니다. 저장 버튼을 눌러야 반영됩니다.`);
+  }
+
+  function selectAllBoarding(boarded: boolean) {
+    setSaved(false);
+    setStudents((current) => current.map((student) => ({ ...student, boarded })));
+    setDataMessage(boarded ? "전체 학생을 탑승으로 선택했습니다. 저장 버튼을 눌러야 반영됩니다." : "전체 학생을 미탑승으로 해제했습니다. 저장 버튼을 눌러야 반영됩니다.");
   }
 
   function updateNote(id: number, note: string) {
     setSaved(false);
     setStudents((current) => current.map((student) => student.id === id ? { ...student, note } : student));
+    setDataMessage("학생 비고를 변경했습니다. 저장 버튼을 눌러야 반영됩니다.");
+  }
+
+  function cancelRunChanges() {
+    if (!schoolData) return;
+    const rows = buildRunStudents(schoolData, busId, selectedDate);
+    const cached = runCache.current.get(`${busId}:${selectedDate}`);
+    setRunStatus(cached?.run?.status ?? "operated");
+    setRunReason(cached?.run?.reason ?? "");
+    setStudents(rows.map((student) => {
+      const record = cached?.boarding.find((item) => item.student_id === student.id);
+      return record ? { ...student, boarded: Boolean(record.boarded), note: record.note ?? "" } : student;
+    }));
+    setSaved(Boolean(cached?.run));
+    setDataMessage(cached?.run ? "저장 전 변경사항을 취소하고 마지막 저장 상태로 되돌렸습니다." : "입력한 내용을 취소하고 기본 탑승 상태로 되돌렸습니다.");
+  }
+
+  async function reorderRunStudents(sourceId: number, targetId: number) {
+    if (sourceId === targetId || dataBusy) return;
+    const previous = [...students];
+    const sourceIndex = previous.findIndex((student) => student.id === sourceId);
+    const targetIndex = previous.findIndex((student) => student.id === targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    const next = [...previous];
+    const [moved] = next.splice(sourceIndex, 1);
+    next.splice(targetIndex, 0, moved);
+    setStudents(next);
+    setDataBusy(true);
+    setDataMessage("학생 탑승 순서를 저장 중입니다…");
+    try {
+      const response = await fetch("/api/runs", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ busId, date: selectedDate, assignmentIds: next.map((student) => student.assignmentId) }) });
+      const result = await response.json().catch(() => ({})) as { error?: string };
+      if (!response.ok) {
+        setStudents(previous);
+        setDataMessage(`탑승 순서 저장 실패: ${result.error ?? "서버에서 저장하지 못했습니다."}`);
+        return;
+      }
+      const orderByAssignment = new Map(next.map((student, index) => [student.assignmentId, index + 1]));
+      setSchoolData((current) => current ? { ...current, assignments: current.assignments.map((assignment) => orderByAssignment.has(assignment.id) ? { ...assignment, boarding_order: orderByAssignment.get(assignment.id) } : assignment) } : current);
+      setDataMessage("학생 탑승 순서가 저장되었습니다.");
+    } catch {
+      setStudents(previous);
+      setDataMessage("탑승 순서 저장 실패: 서버와 통신하지 못했습니다.");
+    } finally {
+      setDataBusy(false);
+    }
   }
 
   if (authUser === undefined) return <main className="auth-screen"><div className="auth-card loading"><div className="brand-mark">안전</div><p>통학버스 안전일지를 준비하고 있습니다.</p></div></main>;
@@ -588,25 +694,26 @@ export default function Home() {
           <div><span className="eyebrow">{settingsForm.schoolYear}학년도 · {selectedDate >= settingsForm.semester2StartDate && selectedDate <= settingsForm.semester2EndDate ? "2학기" : "1학기"}</span><h1>{view === "log" ? "오늘의 운행일지" : view === "stats" ? "미운행 통계" : view === "checklist" ? "안전 점검 체크리스트" : "통학버스 관리"}</h1></div>
           <div className="account-area"><div className="today"><span>{authUser.demo ? "읽기 전용 체험" : authUser.role === "admin" ? "업무담당자" : authUser.role === "driver" ? "운전자" : "동승자"}</span><strong>{authUser.display_name ?? authUser.username}</strong></div><button onClick={logout}>{authUser.demo ? "체험 종료" : "로그아웃"}</button></div>
         </header>
-        {dataMessage && <div className={`action-message ${dataBusy ? "working" : ""}`} role="status">{dataBusy && <span className="loading-dot" />} {dataMessage}</div>}
+        {dataMessage && <div className={`action-message ${dataBusy ? "working" : /실패|못했습니다|오류/.test(dataMessage) ? "error" : ""}`} role="status" aria-live="polite">{dataBusy && <span className="loading-dot" />} {dataMessage}</div>}
         {authUser.demo && <div className="demo-banner"><strong>체험 모드</strong><span>샘플 데이터로 화면을 둘러보는 중입니다. 입력 내용은 실제로 저장되지 않습니다.</span></div>}
 
         {view === "log" && (
           <div className="content-grid">
             <section className="main-panel">
               <div className="control-row">
-                <label>운행일<input type="date" value={selectedDate} onChange={(event) => setSelectedDate(event.target.value)} /></label>
-                <label>차량<select value={busId} onChange={(event) => setBusId(Number(event.target.value))}>{liveBuses.map((bus) => <option key={bus.id} value={bus.id}>{bus.label} · {bus.plate}</option>)}</select></label>
+                <label>운행일<input type="date" value={selectedDate} onChange={(event) => { setSelectedDate(event.target.value); setSaved(false); setDataMessage("선택한 날짜의 운행일지를 불러오는 중입니다…"); }} /></label>
+                <label>차량<select value={busId} onChange={(event) => { setBusId(Number(event.target.value)); setSaved(false); setDataMessage("선택한 차량의 운행일지를 불러오는 중입니다…"); }}>{liveBuses.map((bus) => <option key={bus.id} value={bus.id}>{bus.label} · {bus.plate}</option>)}</select></label>
                 <div className="driver-chip"><span>운전자</span><strong>{selectedBus.driver}</strong></div>
                 <div className="driver-chip"><span>동승자</span><strong>{selectedBus.attendant}</strong></div>
               </div>
-              <div className={excludedReason ? "run-status excluded" : "run-status"}><div><span className="status-dot" />{excludedReason ? "자동 제외일" : runStatus === "operated" ? "정상 운행" : "차량 미운행"}</div><p>{excludedReason ? `${excludedReason} — 운행일지 작성 대상에서 제외됩니다.` : "대한민국 공휴일과 등록된 재량휴업일은 자동으로 일지에서 제외됩니다."}</p>{!excludedReason && <div className="run-toggle"><button className={runStatus === "operated" ? "active" : ""} onClick={() => setRunStatus("operated")}>정상 운행</button><button className={runStatus === "not_operated" ? "active warning" : ""} onClick={() => setRunStatus("not_operated")}>미운행</button></div>}</div>
-              {runStatus === "not_operated" && !excludedReason && <div className="not-running-reason"><label>미운행 사유<input value={runReason} onChange={(event) => setRunReason(event.target.value)} placeholder="예: 차량 정비, 운전자 사정" /></label></div>}
-              <div className="panel-heading"><div><h2>{selectedBus.label} 등교 탑승 명단</h2><p>학생별 등교 탑승 여부와 특이사항을 기록하세요.</p></div><div className="count"><strong>{boardedCount}</strong><span>/ {students.length}명 탑승</span></div></div>
+              <div className={excludedReason ? "run-status excluded" : "run-status"}><div><span className="status-dot" />{excludedReason ? "자동 제외일" : runStatus === "operated" ? "정상 운행" : "차량 미운행"}</div><p>{excludedReason ? `${excludedReason} — 운행일지 작성 대상에서 제외됩니다.` : "대한민국 공휴일과 등록된 재량휴업일은 자동으로 일지에서 제외됩니다."}</p>{!excludedReason && <div className="run-toggle"><button className={runStatus === "operated" ? "active" : ""} onClick={() => { setRunStatus("operated"); setSaved(false); setDataMessage("정상 운행으로 변경했습니다. 저장 버튼을 눌러야 반영됩니다."); }}>정상 운행</button><button className={runStatus === "not_operated" ? "active warning" : ""} onClick={() => { setRunStatus("not_operated"); setSaved(false); setDataMessage("미운행으로 변경했습니다. 사유를 입력한 뒤 저장하세요."); }}>미운행</button></div>}</div>
+              {runStatus === "not_operated" && !excludedReason && <div className="not-running-reason"><label>미운행 사유<input value={runReason} onChange={(event) => { setRunReason(event.target.value); setSaved(false); setDataMessage("미운행 사유를 변경했습니다. 저장 버튼을 눌러야 반영됩니다."); }} placeholder="예: 차량 정비, 운전자 사정" /></label></div>}
+              <div className="panel-heading"><div><h2>{selectedBus.label} 등교 탑승 명단</h2><p>탑승장소 순으로 표시됩니다. 학생 행을 끌어 놓으면 순서를 조정할 수 있습니다.</p></div><div className="boarding-tools"><div className="bulk-boarding-actions"><button type="button" onClick={() => selectAllBoarding(true)} disabled={!students.length || dataBusy}>전체 선택</button><button type="button" onClick={() => selectAllBoarding(false)} disabled={!students.length || dataBusy}>전체 해제</button></div><div className="count"><strong>{boardedCount}</strong><span>/ {students.length}명 탑승</span></div></div></div>
               {runStatus === "operated" && <div className="student-list">
                 {students.length === 0 && <div className="empty-state"><strong>이 날짜에 배정된 학생이 없습니다.</strong><span>관리자 설정에서 학생과 차량 배정 기간을 등록하세요.</span></div>}
                 {students.map((student) => (
-                  <div className="student-row" key={student.id}>
+                  <div className="student-row" key={student.id} onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; }} onDrop={(event) => { event.preventDefault(); const sourceId = Number(event.dataTransfer.getData("runStudentId")); if (sourceId) void reorderRunStudents(sourceId, student.id); }}>
+                    <span className="drag-handle" draggable={!dataBusy} role="button" tabIndex={0} title="끌어서 순서 변경" aria-label={`${student.name} 순서 변경. 위아래 방향키 사용 가능`} onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("runStudentId", String(student.id)); }} onKeyDown={(event) => { if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return; event.preventDefault(); const index = students.findIndex((item) => item.id === student.id); const target = students[index + (event.key === "ArrowUp" ? -1 : 1)]; if (target) void reorderRunStudents(student.id, target.id); }}>⋮⋮</span>
                     <button className={student.boarded ? "boarding checked" : "boarding"} onClick={() => toggleBoarding(student.id)} aria-label={`${student.name} 탑승 여부`}>{student.boarded ? "✓" : "–"}</button>
                     <div className="student-info"><strong>{student.name}</strong><span>{student.detail}</span></div>
                     <span className={student.boarded ? "badge boarded" : "badge absent"}>{student.boarded ? "탑승" : "미탑승"}</span>
@@ -614,7 +721,7 @@ export default function Home() {
                   </div>
                 ))}
               </div>}
-              <div className="save-bar"><span>{dataMessage || (saved ? "저장되었습니다." : excludedReason ? "제외일은 미운행 날짜에 자동 포함됩니다." : "변경 내용을 확인한 뒤 저장하세요.")}</span><button onClick={saveRun} disabled={Boolean(excludedReason)}>{excludedReason ? "자동 제외일" : runStatus === "operated" ? "운행일지 저장" : "미운행 저장"}</button></div>
+              <div className="save-bar"><span>{dataBusy ? "처리 중입니다. 잠시만 기다려 주세요." : saved ? "현재 내용은 저장된 상태입니다." : excludedReason ? "제외일은 미운행 날짜에 자동 포함됩니다." : "저장하지 않은 변경사항이 있습니다."}</span><div className="save-actions"><button type="button" className="secondary-save" onClick={cancelRunChanges} disabled={Boolean(excludedReason) || dataBusy}>변경 취소</button><button onClick={saveRun} disabled={Boolean(excludedReason) || dataBusy}>{excludedReason ? "자동 제외일" : dataBusy ? "저장 중…" : runStatus === "operated" ? "운행일지 저장" : "미운행 저장"}</button></div></div>
             </section>
 
             <aside className="summary-panel">

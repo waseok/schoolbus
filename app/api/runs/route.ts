@@ -60,3 +60,26 @@ export async function POST(request: Request) {
   }
   return Response.json({ ok: true, runId: savedRun.id });
 }
+
+export async function PATCH(request: Request) {
+  const db = await ensureDatabase();
+  const body = await request.json() as { busId: number; date: string; assignmentIds: number[] };
+  if (!Number.isInteger(body.busId) || body.busId <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(body.date ?? "") || !Array.isArray(body.assignmentIds) || body.assignmentIds.length === 0 || body.assignmentIds.some((id) => !Number.isInteger(id) || id <= 0) || new Set(body.assignmentIds).size !== body.assignmentIds.length) return jsonError("학생 탑승 순서 정보가 올바르지 않습니다.");
+  const user = await requireUser(request);
+  if (!user) return jsonError("로그인이 필요합니다.", 401);
+  if (!(await canAccessBus(user, body.busId, body.date))) return jsonError("담당 차량의 학생 순서만 변경할 수 있습니다.", 403);
+  if (user.demo) return jsonError("체험 모드에서는 학생 탑승 순서를 저장하지 않습니다.", 403);
+
+  const { data: activeAssignments, error: assignmentError } = await db.from("assignments").select("id")
+    .eq("bus_id", body.busId)
+    .lte("start_date", body.date)
+    .gte("end_date", body.date)
+    .in("id", body.assignmentIds);
+  if (assignmentError) assertDatabase(null, assignmentError, "학생 배정 정보를 확인하지 못했습니다.");
+  if ((activeAssignments?.length ?? 0) !== body.assignmentIds.length) return jsonError("현재 운행일에 배정된 학생만 순서를 변경할 수 있습니다.", 409);
+
+  const { data, error } = await db.rpc("reorder_bus_assignments", { p_bus_id: body.busId, p_assignment_ids: body.assignmentIds });
+  if (error) assertDatabase(null, error, "학생 탑승 순서를 저장하지 못했습니다.");
+  if (Number(data) !== body.assignmentIds.length) return jsonError("일부 학생의 탑승 순서를 저장하지 못했습니다.", 409);
+  return Response.json({ ok: true });
+}

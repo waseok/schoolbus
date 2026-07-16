@@ -45,7 +45,7 @@ export async function GET(request: Request) {
       isAdmin ? db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }) : db.from("user_bus_assignments").select("id,user_id,bus_id,start_date,end_date").eq("user_id", user.id),
       db.from("checklist_items").select("id, code, category, content, responsible_role, sort_order").eq("active", 1).order("sort_order"),
       isAdmin ? db.from("students").select("id,name,grade,class_name").eq("active", 1).order("grade").order("class_name").order("name") : Promise.resolve({ data: [], error: null }),
-      isAdmin ? db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date").order("start_date", { ascending: false }) : Promise.resolve({ data: [], error: null }),
+      isAdmin ? db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date,boarding_order").order("start_date", { ascending: false }) : Promise.resolve({ data: [], error: null }),
       isAdmin ? db.from("calendar_exclusions").select("id,date,kind,note").order("date") : Promise.resolve({ data: [], error: null }),
     ]);
     for (const result of results) if (result.error) assertDatabase(null, result.error);
@@ -62,7 +62,7 @@ export async function GET(request: Request) {
     const results = await Promise.all([
       db.from("school_settings").select("*").eq("id", 1).maybeSingle(),
       db.from("buses").select("id,bus_number,plate_number,driver_name,attendant_name").eq("active", 1).order("bus_number"),
-      db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date,student:students!inner(id,name,grade,class_name,active)").lte("start_date", date).gte("end_date", date).eq("student.active", 1).order("bus_id"),
+      db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date,boarding_order,student:students!inner(id,name,grade,class_name,active)").lte("start_date", date).gte("end_date", date).eq("student.active", 1).order("bus_id"),
       db.from("calendar_exclusions").select("id,date,kind,note").gte("date", `${date.slice(0, 4)}-01-01`).lte("date", `${date.slice(0, 4)}-12-31`).order("date"),
       db.from("daily_runs").select("id,bus_id,date,status,reason,boarding_records(student_id,boarded,note)").eq("date", date),
       user.role === "admin" ? Promise.resolve({ data: [], error: null }) : db.from("user_bus_assignments").select("bus_id").eq("user_id", user.id).lte("start_date", date).gte("end_date", date),
@@ -70,13 +70,13 @@ export async function GET(request: Request) {
     for (const result of results) if (result.error) assertDatabase(null, result.error);
     const [settingsResult, busesResult, assignmentsResult, exclusionsResult, runsResult, userBusesResult] = results;
     const allowed = user.role === "admin" ? null : new Set((userBusesResult.data as Array<{ bus_id: number }>).map((item) => item.bus_id));
-    const rawAssignments = assignmentsResult.data as Array<{ id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string; student: { id: number; name: string; grade: number; class_name: string; active: number } | Array<{ id: number; name: string; grade: number; class_name: string; active: number }> }>;
+    const rawAssignments = assignmentsResult.data as Array<{ id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string; boarding_order: number; student: { id: number; name: string; grade: number; class_name: string; active: number } | Array<{ id: number; name: string; grade: number; class_name: string; active: number }> }>;
     const visibleAssignments = rawAssignments.filter((item) => !allowed || allowed.has(item.bus_id));
     const students = Array.from(new Map(visibleAssignments.flatMap((assignment) => {
       const student = Array.isArray(assignment.student) ? assignment.student[0] : assignment.student;
       return student ? [[student.id, { id: student.id, name: student.name, grade: student.grade, class_name: student.class_name }]] as const : [];
     })).values());
-    const assignments = visibleAssignments.map((assignment) => ({ id: assignment.id, student_id: assignment.student_id, bus_id: assignment.bus_id, stop_name: assignment.stop_name, start_date: assignment.start_date, end_date: assignment.end_date }));
+    const assignments = visibleAssignments.map((assignment) => ({ id: assignment.id, student_id: assignment.student_id, bus_id: assignment.bus_id, stop_name: assignment.stop_name, start_date: assignment.start_date, end_date: assignment.end_date, boarding_order: assignment.boarding_order }));
     const buses = (busesResult.data as Array<{ id: number }>).filter((item) => !allowed || allowed.has(item.id));
     const initialRuns = (runsResult.data as Array<{ id: number; bus_id: number; date: string; status: string; reason: string | null; boarding_records: Array<{ student_id: number; boarded: number; note: string | null }> }>).filter((item) => !allowed || allowed.has(item.bus_id));
     return respond({ settings: settingsResult.data, buses, students, assignments, exclusions: exclusionsResult.data, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [], initialRuns, initialDate: date });
@@ -173,7 +173,7 @@ export async function POST(request: Request) {
     const { error } = await db.from("students").update({ name: body.name.trim(), grade: body.grade, class_name: body.className.trim() }).eq("id", body.id);
     if (error) assertDatabase(null, error);
     if (body.assignmentId) {
-      const { error: assignmentError } = await db.from("assignments").update({ stop_name: body.stopName?.trim() || null }).eq("id", body.assignmentId).eq("student_id", body.id);
+      const { error: assignmentError } = await db.from("assignments").update({ stop_name: body.stopName?.trim() || null, boarding_order: 0 }).eq("id", body.assignmentId).eq("student_id", body.id);
       if (assignmentError) assertDatabase(null, assignmentError, "승차장소를 수정하지 못했습니다.");
     }
   } else if (body.action === "addStudentAndAssign") {
@@ -211,7 +211,7 @@ export async function POST(request: Request) {
     if (!data) return jsonError("이미 삭제되었거나 찾을 수 없는 학생 배정입니다.", 404);
   } else if (body.action === "moveAssignment") {
     if (!Number.isInteger(body.assignmentId) || body.assignmentId <= 0 || !Number.isInteger(body.busId) || body.busId <= 0) return jsonError("학생 배정 이동 정보가 올바르지 않습니다.");
-    const { data, error } = await db.from("assignments").update({ bus_id: body.busId }).eq("id", body.assignmentId).select("id").maybeSingle();
+    const { data, error } = await db.from("assignments").update({ bus_id: body.busId, boarding_order: 0 }).eq("id", body.assignmentId).select("id").maybeSingle();
     if (error) assertDatabase(null, error, "학생 차량 배정을 옮기지 못했습니다.");
     if (!data) return jsonError("이미 삭제되었거나 찾을 수 없는 학생 배정입니다.", 404);
   } else if (body.action === "deleteBusAssignments") {
