@@ -1,5 +1,5 @@
 import { assertDatabase, ensureDatabase, jsonError } from "../../../db/runtime";
-import { createPinHash, currentUser, requireUser } from "../../auth";
+import { authorizedBusIds, createPinHash, currentUser, requireUser } from "../../auth";
 
 type DataAction =
   | { action: "saveBus"; id: number; plateNumber?: string; driverName?: string; attendantName?: string }
@@ -18,7 +18,9 @@ type DataAction =
   | { action: "addGroup"; name: string }
   | { action: "deleteGroup"; groupId: number }
   | { action: "updateChecklistItem"; id: number; content: string; responsibleRole: "all" | "driver" | "attendant" }
-  | { action: "issueOperationCode"; displayName?: string; role: "driver" | "attendant"; busId: number; startDate: string; endDate: string }
+  | { action: "issueOperationCode"; displayName?: string; role: "driver" | "attendant"; groupId: number; startDate: string; endDate: string }
+  | { action: "updateOperationCode"; userId: number; code: string; displayName?: string; role: "driver" | "attendant"; groupId: number; startDate: string; endDate: string }
+  | { action: "deleteOperationCode"; userId: number }
   | { action: "saveSettings"; schoolYear: number; startDate: string; endDate: string; semester1StartDate: string; semester1EndDate: string; semester2StartDate: string; semester2EndDate: string; includeLaborDay: boolean; includeElectionDay: boolean };
 
 export async function GET(request: Request) {
@@ -43,33 +45,32 @@ export async function GET(request: Request) {
       db.from("inspection_group_buses").select("*").order("group_id").order("bus_id"),
       isAdmin ? db.from("app_users").select("id, username, display_name, role, active").eq("active", 1).order("role").order("display_name").order("username") : Promise.resolve({ data: [], error: null }),
       isAdmin ? db.from("user_bus_assignments").select("*").order("start_date", { ascending: false }) : db.from("user_bus_assignments").select("id,user_id,bus_id,start_date,end_date").eq("user_id", user.id),
+      isAdmin ? db.from("user_group_assignments").select("*").order("start_date", { ascending: false }) : db.from("user_group_assignments").select("id,user_id,group_id,start_date,end_date").eq("user_id", user.id),
       db.from("checklist_items").select("id, code, category, content, responsible_role, sort_order").eq("active", 1).order("sort_order"),
       isAdmin ? db.from("students").select("id,name,grade,class_name").eq("active", 1).order("grade").order("class_name").order("name") : Promise.resolve({ data: [], error: null }),
       isAdmin ? db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date,boarding_order").order("start_date", { ascending: false }) : Promise.resolve({ data: [], error: null }),
       isAdmin ? db.from("calendar_exclusions").select("id,date,kind,note").order("date") : Promise.resolve({ data: [], error: null }),
     ]);
     for (const result of results) if (result.error) assertDatabase(null, result.error);
-    const [groups, groupBuses, users, userBuses, checklistItems, students, assignments, exclusions] = results.map((result) => result.data);
-    if (isAdmin) return respond({ groups, groupBuses, users, userBuses, checklistItems, students, assignments, exclusions });
-    const allowedBusIds = new Set((userBuses as Array<{ bus_id: number }>).map((item) => item.bus_id));
-    const visibleGroupBuses = (groupBuses as Array<{ group_id: number; bus_id: number }>).filter((item) => allowedBusIds.has(item.bus_id));
-    const visibleGroupIds = new Set(visibleGroupBuses.map((item) => item.group_id));
-    return respond({ groups: (groups as Array<{ id: number }>).filter((item) => visibleGroupIds.has(item.id)), groupBuses: visibleGroupBuses, users: [], userBuses: [], checklistItems });
+    const [groups, groupBuses, users, userBuses, userGroups, checklistItems, students, assignments, exclusions] = results.map((result) => result.data);
+    if (isAdmin) return respond({ groups, groupBuses, users, userBuses, userGroups, checklistItems, students, assignments, exclusions });
+    const visibleGroupIds = new Set((userGroups as Array<{ group_id: number }>).map((item) => item.group_id));
+    const visibleGroupBuses = (groupBuses as Array<{ group_id: number; bus_id: number }>).filter((item) => visibleGroupIds.has(item.group_id));
+    return respond({ groups: (groups as Array<{ id: number }>).filter((item) => visibleGroupIds.has(item.id)), groupBuses: visibleGroupBuses, users: [], userBuses: [], userGroups: [], checklistItems });
   }
 
   if (bootstrap && !user.demo) {
     const date = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get("date") ?? "") ? String(url.searchParams.get("date")) : new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+    const allowed = user.role === "admin" ? null : new Set(await authorizedBusIds(user, date));
     const results = await Promise.all([
       db.from("school_settings").select("*").eq("id", 1).maybeSingle(),
       db.from("buses").select("id,bus_number,plate_number,driver_name,attendant_name").eq("active", 1).order("bus_number"),
       db.from("assignments").select("id,student_id,bus_id,stop_name,start_date,end_date,boarding_order,student:students!inner(id,name,grade,class_name,active)").lte("start_date", date).gte("end_date", date).eq("student.active", 1).order("bus_id"),
       db.from("calendar_exclusions").select("id,date,kind,note").gte("date", `${date.slice(0, 4)}-01-01`).lte("date", `${date.slice(0, 4)}-12-31`).order("date"),
       db.from("daily_runs").select("id,bus_id,date,status,reason,boarding_records(student_id,boarded,note)").eq("date", date),
-      user.role === "admin" ? Promise.resolve({ data: [], error: null }) : db.from("user_bus_assignments").select("bus_id").eq("user_id", user.id).lte("start_date", date).gte("end_date", date),
     ]);
     for (const result of results) if (result.error) assertDatabase(null, result.error);
-    const [settingsResult, busesResult, assignmentsResult, exclusionsResult, runsResult, userBusesResult] = results;
-    const allowed = user.role === "admin" ? null : new Set((userBusesResult.data as Array<{ bus_id: number }>).map((item) => item.bus_id));
+    const [settingsResult, busesResult, assignmentsResult, exclusionsResult, runsResult] = results;
     const rawAssignments = assignmentsResult.data as Array<{ id: number; student_id: number; bus_id: number; stop_name: string | null; start_date: string; end_date: string; boarding_order: number; student: { id: number; name: string; grade: number; class_name: string; active: number } | Array<{ id: number; name: string; grade: number; class_name: string; active: number }> }>;
     const visibleAssignments = rawAssignments.filter((item) => !allowed || allowed.has(item.bus_id));
     const students = Array.from(new Map(visibleAssignments.flatMap((assignment) => {
@@ -79,7 +80,7 @@ export async function GET(request: Request) {
     const assignments = visibleAssignments.map((assignment) => ({ id: assignment.id, student_id: assignment.student_id, bus_id: assignment.bus_id, stop_name: assignment.stop_name, start_date: assignment.start_date, end_date: assignment.end_date, boarding_order: assignment.boarding_order }));
     const buses = (busesResult.data as Array<{ id: number }>).filter((item) => !allowed || allowed.has(item.id));
     const initialRuns = (runsResult.data as Array<{ id: number; bus_id: number; date: string; status: string; reason: string | null; boarding_records: Array<{ student_id: number; boarded: number; note: string | null }> }>).filter((item) => !allowed || allowed.has(item.bus_id));
-    return respond({ settings: settingsResult.data, buses, students, assignments, exclusions: exclusionsResult.data, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [], initialRuns, initialDate: date });
+    return respond({ settings: settingsResult.data, buses, students, assignments, exclusions: exclusionsResult.data, groups: [], groupBuses: [], users: [], userBuses: [], userGroups: [], checklistItems: [], initialRuns, initialDate: date });
   }
 
   const results = await Promise.all([
@@ -122,17 +123,16 @@ export async function GET(request: Request) {
       groupBuses: [],
       users: [{ id: 0, username: "demo", display_name: "체험 관리자", role: "admin", active: 1 }],
       userBuses: [],
+      userGroups: [],
       checklistItems: [],
       demo: true,
     });
   }
 
   if (user.role === "admin") {
-    return respond({ settings, buses, students, assignments, exclusions, groups: [], groupBuses: [], users: [], userBuses: [], checklistItems: [] });
+    return respond({ settings, buses, students, assignments, exclusions, groups: [], groupBuses: [], users: [], userBuses: [], userGroups: [], checklistItems: [] });
   }
-  const { data: userBuses, error: userBusesError } = await db.from("user_bus_assignments").select("user_id, bus_id").eq("user_id", user.id);
-  if (userBusesError) assertDatabase(null, userBusesError);
-  const allowed = Array.from(new Set((userBuses as Array<{ user_id: number; bus_id: number }>).map((item) => item.bus_id)));
+  const allowed = await authorizedBusIds(user, new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date()));
   const visibleAssignments = (assignments as Array<{ id: number; student_id: number; bus_id: number }>).filter((item) => allowed.includes(item.bus_id));
   const visibleStudentIds = visibleAssignments.map((item) => item.student_id);
   return respond({
@@ -145,6 +145,7 @@ export async function GET(request: Request) {
     groupBuses: [],
     users: [],
     userBuses: [],
+    userGroups: [],
     checklistItems: [],
   });
 }
@@ -251,6 +252,9 @@ export async function POST(request: Request) {
     const { count, error: countError } = await db.from("inspection_groups").select("id", { count: "exact", head: true }).eq("active", 1);
     if (countError) assertDatabase(null, countError);
     if ((count ?? 0) <= 1) return jsonError("점검 세트는 한 개 이상 필요합니다.");
+    const { count: codeCount, error: codeCountError } = await db.from("user_group_assignments").select("id", { count: "exact", head: true }).eq("group_id", body.groupId);
+    if (codeCountError) assertDatabase(null, codeCountError);
+    if ((codeCount ?? 0) > 0) return jsonError("이 세트에 연결된 운행 코드를 먼저 수정하거나 삭제하세요.");
     const mappingDelete = await db.from("inspection_group_buses").delete().eq("group_id", body.groupId);
     if (mappingDelete.error) assertDatabase(null, mappingDelete.error);
     const { error } = await db.from("inspection_groups").update({ active: 0 }).eq("id", body.groupId);
@@ -260,36 +264,52 @@ export async function POST(request: Request) {
     const { error } = await db.from("checklist_items").update({ content: body.content.trim(), responsible_role: body.responsibleRole }).eq("id", body.id);
     if (error) assertDatabase(null, error);
   } else if (body.action === "issueOperationCode") {
-    if (!body.displayName?.trim() || !["driver", "attendant"].includes(body.role) || !body.busId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("운행 코드 발급 정보를 확인하세요.");
-    const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+    if (!body.displayName?.trim() || !["driver", "attendant"].includes(body.role) || !body.groupId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("운행 코드 발급 정보를 확인하세요.");
+    const { count: groupBusCount, error: groupBusError } = await db.from("inspection_group_buses").select("id", { count: "exact", head: true }).eq("group_id", body.groupId);
+    if (groupBusError) assertDatabase(null, groupBusError);
+    if (!groupBusCount) return jsonError("차량이 등록된 점검 세트를 선택하세요.");
     let issuedCode = "";
-    let createdUser: { id: number } | null = null;
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const random = crypto.getRandomValues(new Uint8Array(8));
-      const code = `BUS-${Array.from(random, (item) => alphabet[item % alphabet.length]).join("")}`;
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const code = String(crypto.getRandomValues(new Uint16Array(1))[0] % 10000).padStart(4, "0");
       const internalPin = await createPinHash(Array.from(crypto.getRandomValues(new Uint8Array(8)), (item) => (item % 10).toString()).join(""));
-      const { data, error } = await db.from("app_users").insert({
-        username: code,
-        display_name: body.displayName.trim(),
-        role: body.role,
-        pin_salt: internalPin.salt,
-        pin_hash: internalPin.hash,
-        active: 1,
-      }).select("id").single();
-      if (!error && data) {
+      const { error } = await db.rpc("create_operation_code", {
+        p_code: code,
+        p_display_name: body.displayName.trim(),
+        p_role: body.role,
+        p_pin_salt: internalPin.salt,
+        p_pin_hash: internalPin.hash,
+        p_group_id: body.groupId,
+        p_start_date: body.startDate,
+        p_end_date: body.endDate,
+      });
+      if (!error) {
         issuedCode = code;
-        createdUser = data;
         break;
       }
       if (error?.code !== "23505") assertDatabase(null, error, "운행 코드를 발급하지 못했습니다.");
     }
-    if (!createdUser) return jsonError("운행 코드 발급을 다시 시도하세요.", 500);
-    const { error } = await db.from("user_bus_assignments").insert({ user_id: createdUser.id, bus_id: body.busId, start_date: body.startDate, end_date: body.endDate });
-    if (error) {
-      await db.from("app_users").delete().eq("id", createdUser.id);
-      assertDatabase(null, error);
-    }
+    if (!issuedCode) return jsonError("운행 코드 발급을 다시 시도하세요.", 500);
     return Response.json({ ok: true, code: issuedCode });
+  } else if (body.action === "updateOperationCode") {
+    if (!Number.isInteger(body.userId) || body.userId <= 0 || !/^\d{4}$/.test(body.code) || !body.displayName?.trim() || !["driver", "attendant"].includes(body.role) || !body.groupId || !body.startDate || !body.endDate || body.startDate > body.endDate) return jsonError("수정할 운행 코드 정보를 확인하세요.");
+    const { count: groupBusCount, error: groupBusError } = await db.from("inspection_group_buses").select("id", { count: "exact", head: true }).eq("group_id", body.groupId);
+    if (groupBusError) assertDatabase(null, groupBusError);
+    if (!groupBusCount) return jsonError("차량이 등록된 점검 세트를 선택하세요.");
+    const { error } = await db.rpc("update_operation_code", {
+      p_user_id: body.userId,
+      p_code: body.code,
+      p_display_name: body.displayName.trim(),
+      p_role: body.role,
+      p_group_id: body.groupId,
+      p_start_date: body.startDate,
+      p_end_date: body.endDate,
+    });
+    if (error?.code === "23505") return jsonError("이미 사용 중인 4자리 운행 코드입니다.");
+    if (error) assertDatabase(null, error, "운행 코드를 수정하지 못했습니다.");
+  } else if (body.action === "deleteOperationCode") {
+    if (!Number.isInteger(body.userId) || body.userId <= 0) return jsonError("삭제할 운행 코드를 확인하세요.");
+    const { error } = await db.rpc("delete_operation_code", { p_user_id: body.userId });
+    if (error) assertDatabase(null, error, "운행 코드를 삭제하지 못했습니다.");
   } else if (body.action === "saveSettings") {
     if (!body.startDate || !body.endDate || body.startDate > body.endDate || !body.semester1StartDate || !body.semester1EndDate || !body.semester2StartDate || !body.semester2EndDate || body.semester1StartDate > body.semester1EndDate || body.semester2StartDate > body.semester2EndDate) return jsonError("운행 기간과 학기 기간을 확인하세요.");
     const { error } = await db.from("school_settings").update({

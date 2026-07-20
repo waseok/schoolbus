@@ -118,15 +118,33 @@ export async function requireUser(request: Request, roles?: AppRole[]) {
 
 export async function canAccessBus(user: AuthUser, busId: number, date: string) {
   if (user.role === "admin") return true;
+  return (await authorizedBusIds(user, date)).includes(busId);
+}
+
+export async function authorizedBusIds(user: AuthUser, date: string) {
+  if (user.role === "admin") return [];
   const db = await ensureDatabase();
-  const { data: assignment, error } = await db.from("user_bus_assignments")
-    .select("id")
+  const { data: groupAssignments, error: groupError } = await db.from("user_group_assignments")
+    .select("group_id")
     .eq("user_id", user.id)
-    .eq("bus_id", busId)
     .lte("start_date", date)
-    .gte("end_date", date)
-    .limit(1)
-    .maybeSingle();
-  if (error) assertDatabase(null, error);
-  return Boolean(assignment);
+    .gte("end_date", date);
+  if (groupError) assertDatabase(null, groupError);
+  const groupIds = Array.from(new Set((groupAssignments ?? []).map((item) => item.group_id)));
+  if (groupIds.length) {
+    const { data: mappings, error: mappingError } = await db.from("inspection_group_buses")
+      .select("bus_id")
+      .in("group_id", groupIds);
+    if (mappingError) assertDatabase(null, mappingError);
+    return Array.from(new Set((mappings ?? []).map((item) => item.bus_id)));
+  }
+
+  // Compatibility fallback for operation codes issued before set-based permissions.
+  const { data: legacyAssignments, error: legacyError } = await db.from("user_bus_assignments")
+    .select("bus_id")
+    .eq("user_id", user.id)
+    .lte("start_date", date)
+    .gte("end_date", date);
+  if (legacyError) assertDatabase(null, legacyError);
+  return Array.from(new Set((legacyAssignments ?? []).map((item) => item.bus_id)));
 }

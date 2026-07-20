@@ -6,12 +6,8 @@ async function canAccessGroup(user: { id: number; role: string }, groupId: numbe
   const db = await ensureDatabase();
   const monthStart = `${month}-01`;
   const monthEnd = `${month}-${new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0).getDate().toString().padStart(2, "0")}`;
-  const { data: mappings, error: mappingError } = await db.from("inspection_group_buses").select("bus_id").eq("group_id", groupId);
-  if (mappingError) assertDatabase(null, mappingError);
-  const busIds = (mappings ?? []).map((item) => item.bus_id);
-  if (!busIds.length) return false;
-  const { data: assignment, error } = await db.from("user_bus_assignments").select("id")
-    .eq("user_id", user.id).in("bus_id", busIds).lte("start_date", monthEnd).gte("end_date", monthStart).limit(1).maybeSingle();
+  const { data: assignment, error } = await db.from("user_group_assignments").select("id")
+    .eq("user_id", user.id).eq("group_id", groupId).lte("start_date", monthEnd).gte("end_date", monthStart).limit(1).maybeSingle();
   if (error) assertDatabase(null, error);
   return Boolean(assignment);
 }
